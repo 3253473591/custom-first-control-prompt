@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { SessionId } from '@deepseek-ai/dsh-session'
+import { pluginRecordOf, SessionId } from '@deepseek-ai/dsh-session'
 import { createUserMessage, LlmAdapter, type GenerateOptions, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import * as CustomFirstControlPrompt from '@deepseek-ai/dsh-custom-first-control-prompt'
 import { SEED_SOURCE } from '../src/seed.ts'
@@ -65,7 +65,7 @@ async function harness(adapter: CaptureAdapter, config: Record<string, unknown> 
 }
 
 describe('request-path seed injection', () => {
-  it('prepends the reference exchanges to the conversation request without touching the session log', async () => {
+  it('prepends the reference exchanges to the request and mirrors them as one ignorable log record', async () => {
     const adapter = new CaptureAdapter([textChunks('ok')])
     const ctx = await harness(adapter)
     const handle = await ctx.agentLoop.createAgent(ctx, {
@@ -104,6 +104,21 @@ describe('request-path seed injection', () => {
         event.type === 'user/message' && event.data.source.kind === 'plugin')).toBe(false)
       expect(session.events.filter(event => event.type === 'turn/start')
         .map(event => event.type === 'turn/start' ? event.data.turn : 0)).toEqual([1])
+      // The injected history is mirrored once, as an ignorable plugin record:
+      // it never enters the model-visible surface, but a log reader can show it.
+      const records = session.events.filter(event => event.type === 'plugin:custom-first-control-prompt/injected')
+      expect(records).toHaveLength(1)
+      expect(records[0]?.ignorable).toBe(true)
+      const record = pluginRecordOf(records[0]!)
+      expect(record?.type).toBe('plugin:custom-first-control-prompt/injected')
+      expect(record?.data).toEqual({
+        sections: [],
+        history: [
+          { user: '用户测试提示词1', assistant: '助手提示词1' },
+          { user: '用户测试提示词2', assistant: '助手提示词2' },
+        ],
+        includeSubagents: false,
+      })
     } finally {
       await handle.dispose()
     }

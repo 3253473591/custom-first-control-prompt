@@ -15,10 +15,49 @@ export declare const SEED_SOURCE = "custom-first-control-prompt";
 export declare const TRANSCRIPT_RESERVED_TAGS: readonly string[];
 /** One configured reference exchange between a user and the assistant. */
 export interface HistoryPair {
-    /** User-side text of the exchange. */
-    user: string;
+    /**
+     * User-side text of the exchange.
+     *
+     * Optional: leave it out (or empty) to inject only the assistant side —
+     * reasoning → text → tool-call — with no user message at all.
+     */
+    user?: string;
     /** Assistant-side text of the exchange. */
     assistant: string;
+    /**
+     * Optional assistant-side chain-of-thought text. When present and
+     * non-empty, the injected assistant message carries a `reasoning` block
+     * ahead of its text block, so a reasoning-capable model sees the reference
+     * thinking (providers concatenate `reasoning_content` into context on
+     * tool-carrying requests) instead of only the visible answer.
+     */
+    assistantThinking?: string;
+    /**
+     * 可选：assistant 正文之后追加的伪造工具调用。
+     * 每条生成一个原生 `tool-call` 内容块 —— provider 报文里会变成真的
+     * `tool_calls` 字段，模型看到的是"我自己发起过这次调用"。
+     *
+     * `id` 必须是常量字符串（建议 `seed-call-<条目号>-<调用号>`）：一旦每次
+     * 请求都不同，前缀缓存从第一个变化的 token 起全部失效。
+     * `arguments` 必须是合法 JSON 的**字符串**。
+     */
+    toolCalls?: {
+        id: string;
+        name: string;
+        /** 原始 JSON 字符串，与模型真实产出的一致。 */
+        arguments: string;
+    }[];
+    /**
+     * 与 `toolCalls` 按索引一一配对的结果。
+     * 每条生成一条独立的 `role:'user'` 消息（`source.kind='tool'`，带配对 callId）。
+     *
+     * **必须与 toolCalls 等长**：只造调用不造结果，OpenAI 兼容 provider 直接 400。
+     * 数量多于 toolCalls 的项会被忽略。
+     */
+    toolResults?: {
+        content: string;
+        isError?: boolean;
+    }[];
 }
 /**
  * Build the request-level seed messages: one real alternating user/assistant

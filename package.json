@@ -1,7 +1,7 @@
 {
   "name": "@wm-coders/dsh-custom-first-control-prompt",
-  "description": "Deployment-configured prompt prefix for DeepSeek Harness: ordered system-prompt sections ahead of the persona and reference user/assistant exchanges injected into every ordinary conversation request as real alternating messages (request-path interception, zero session-log writes).",
-  "version": "0.3.0",
+  "description": "Deployment-configured prompt prefix for DeepSeek Harness: ordered system-prompt sections ahead of the persona and reference user/assistant exchanges injected into every ordinary conversation request as real alternating messages (request-path interception; the injected history is mirrored into the session log as an ignorable plugin record so log readers can show it).",
+  "version": "0.5.0",
   "publishConfig": {
     "access": "public"
   },
@@ -54,23 +54,24 @@
   ],
   "license": "MIT",
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.0-0 <0.3.0"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "3.18.1",
     "zod": "^4.4.3"
   },
   "peerDependencies": {
-    "@deepseek-ai/dsh-llm": "0.1.x",
-    "@deepseek-ai/dsh-system-prompt": "0.1.x",
-    "@deepseek-ai/dsh-typert-protocol": "0.1.x",
-    "@deepseek-ai/cordis": "4.0.1",
-    "@deepseek-ai/dsh-api-remotes": "0.1.x",
-    "@deepseek-ai/dsh-client-locale": "0.1.x",
-    "@deepseek-ai/dsh-client-runtime": "0.1.x",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.1.x",
-    "@deepseek-ai/dsh-client-ui-settings": "0.1.x",
-    "@deepseek-ai/dsh-client-ui-slots": "0.1.x",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-system-prompt": ">=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-typert-protocol": ">=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-session": ">=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-api-remotes": ">=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-client-locale": ">=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-client-ui-conversation": ">=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-client-ui-settings": ">=0.2.0-0 <0.3.0",
+    "@deepseek-ai/dsh-client-ui-renderer": ">=0.2.0-0 <0.3.0",
+    "@deepseek-ai/cordis": ">=4.0.2 <5.0.0",
     "react": "^18.2.0"
   },
   "dsh": {
@@ -79,7 +80,7 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-ui-settings",

@@ -7,10 +7,41 @@ import { Agent } from "@deepseek-ai/dsh-agent";
 //#region src/seed.d.ts
 /** One configured reference exchange between a user and the assistant. */
 interface HistoryPair {
-  /** User-side text of the exchange. */
-  user: string;
+  /**
+   * User-side text of the exchange.
+   *
+   * Optional: leave it out (or empty) to inject only the assistant side —
+   * reasoning → text → tool-call — with no user message at all.
+   */
+  user?: string;
   /** Assistant-side text of the exchange. */
   assistant: string;
+  /**
+   * Optional assistant-side chain-of-thought text. When present and
+   * non-empty, the injected assistant message carries a `reasoning` block
+   * ahead of its text block, so a reasoning-capable model sees the reference
+   * thinking (providers concatenate `reasoning_content` into context on
+   * tool-carrying requests) instead of only the visible answer.
+   */
+  assistantThinking?: string;
+  /**
+   * Optional forged tool invocations appended after the assistant text. Each
+   * one becomes a native `tool-call` block, so the provider wire carries a real
+   * `tool_calls` entry and the model reads it as its own past call.
+   *
+   * `id` must be a CONSTANT string (`seed-call-<pair>-<n>`): a value that
+   * changes per request breaks prefix-cache reuse from the first changed token.
+   * `arguments` must be a JSON string.
+   */
+  toolCalls?: { id: string; name: string; arguments: string }[];
+  /**
+   * Results paired to `toolCalls` by index. Each one becomes its own
+   * `role:'user'` message carrying a `tool-result` block with a matching callId.
+   *
+   * Must be the SAME LENGTH as `toolCalls`: a call without a result makes an
+   * OpenAI-compatible provider answer 400. Extra entries are ignored.
+   */
+  toolResults?: { content: string; isError?: boolean }[];
 }
 //#endregion
 //#region src/panel-types.d.ts
@@ -33,10 +64,16 @@ interface PanelSectionView {
 }
 /** One configured reference exchange as the panel shows it. */
 interface PanelPairView {
-  /** User-side text of the exchange. */
-  user: string;
+  /** User-side text of the exchange. Optional: empty means "assistant side only". */
+  user?: string;
   /** Assistant-side text of the exchange. */
   assistant: string;
+  /** Optional assistant-side chain-of-thought text. */
+  assistantThinking?: string;
+  /** Forged tool invocations rendered as native `tool-call` blocks. */
+  toolCalls?: { id: string; name: string; arguments: string }[];
+  /** Results paired to `toolCalls` by index; must match its length. */
+  toolResults?: { content: string; isError?: boolean }[];
 }
 /** Parsed view of this plugin's entry inside the profile patch file. */
 interface PanelConfigView {

@@ -27,4 +27,5 @@
             assistant: "助手回复001"
           - user: "用户发送002"
             assistant: "助手回复002"
+            assistantThinking: "（可选参考思维链：模型在回答前可见的思考示范；不配置则只注入正文）"
         includeSubagents: true

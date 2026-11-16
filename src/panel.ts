@@ -34,6 +34,11 @@ interface PanelSettings {
   prepareDocument(): Promise<string | undefined>
 }
 
+/** Minimal profile face: the launched profile's own patch file (dsh >= 0.2). */
+interface PanelProfileContext {
+  patchPath: string
+}
+
 /** Minimal sandbox-policy face: per-call execution policy resolution. */
 interface PanelSandboxPolicy {
   resolve(request?: { mode?: string }): unknown
@@ -108,12 +113,19 @@ export class PanelService extends TypertRemoteService {
   // ---- patch file plumbing ----
 
   private async patchPath(): Promise<string | null> {
+    // dsh >= 0.2 exposes the launched profile itself; prefer it over string surgery.
+    const profileContext = this.ctx.get('profileContext') as PanelProfileContext | undefined
+    if (profileContext !== undefined && typeof profileContext.patchPath === 'string' && profileContext.patchPath.length > 0) {
+      return profileContext.patchPath.replace(/\\/g, '/')
+    }
     const settings = this.ctx.get('settings') as PanelSettings | undefined
     if (settings !== undefined) {
       try {
         const doc = await settings.prepareDocument()
         if (typeof doc === 'string' && doc.length > 0) {
           const norm = doc.replace(/\\/g, '/')
+          // 0.2.x hands back the profile patch file itself; 0.1.x handed back settings.yaml.
+          if (/\/cordis\.patch\.ya?ml$/i.test(norm)) return norm
           const i = norm.lastIndexOf('/')
           if (i > 0) return `${norm.slice(0, i)}/profiles/web/cordis.patch.yml`
         }
@@ -150,6 +162,10 @@ export class PanelService extends TypertRemoteService {
     out.found = true
     let zone: '' | 'sections' | 'history' = ''
     let cur: PanelConfigView['sections'][number] | PanelConfigView['history'][number] | null = null
+    // toolCalls / toolResults 是嵌套数组，逐行扫描需要独立的子状态
+    let sub: '' | 'calls' | 'results' = ''
+    let curCall: { id: string; name: string; arguments: string } | null = null
+    let curResult: { content: string; isError?: boolean } | null = null
     for (const line of raw.split(/\r?\n/)) {
       const t = line.trim()
       if (t.indexOf('sections:') === 0) { zone = 'sections'; cur = null; continue }
@@ -168,8 +184,30 @@ export class PanelService extends TypertRemoteService {
         if (t.indexOf('- user:') === 0) {
           cur = { user: PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1)), assistant: '' }
           out.history.push(cur)
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('assistantThinking:') === 0) {
+          cur.assistantThinking = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
         } else if (cur !== null && 'assistant' in cur && t.indexOf('assistant:') === 0) {
           cur.assistant = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('toolCalls:') === 0) {
+          cur.toolCalls = []
+          sub = 'calls'
+          curCall = null
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('toolResults:') === 0) {
+          cur.toolResults = []
+          sub = 'results'
+          curResult = null
+        } else if (cur !== null && sub === 'calls' && t.indexOf('- id:') === 0) {
+          curCall = { id: PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1)), name: '', arguments: '' }
+          cur.toolCalls!.push(curCall)
+        } else if (cur !== null && sub === 'calls' && curCall !== null && t.indexOf('name:') === 0) {
+          curCall.name = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && sub === 'calls' && curCall !== null && t.indexOf('arguments:') === 0) {
+          curCall.arguments = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && sub === 'results' && t.indexOf('- content:') === 0) {
+          curResult = { content: PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1)), isError: false }
+          cur.toolResults!.push(curResult)
+        } else if (cur !== null && sub === 'results' && curResult !== null && t.indexOf('isError:') === 0) {
+          curResult.isError = t.slice(t.indexOf(':') + 1).trim() === 'true'
         }
       } else if (zone === '') {
         const m = t.match(/^includeSubagents:\s*(true|false)/)
@@ -177,6 +215,48 @@ export class PanelService extends TypertRemoteService {
       }
     }
     return out
+  }
+
+  /**
+   * Render one history pair as YAML, including forged tool calls.
+   *
+   * Extracted so the two indent variants (core row / profile override) cannot
+   * drift apart: they differ only in the leading blank string.
+   *
+   * @param p - the pair to render.
+   * @param itemIndent - indent of the `- user:` item line.
+   * @param fieldIndent - indent of the `assistant:` / `toolCalls:` lines.
+   * @returns the rendered block, one pair.
+   */
+  private static pairBlock(p: PanelPairView, itemIndent: string, fieldIndent: string): string {
+    const userText = typeof p.user === 'string' ? p.user : ''
+    let block = `${itemIndent}- user: ${PanelService.yamlScalar(userText)}`
+      + `\n${fieldIndent}assistant: ${PanelService.yamlScalar(p.assistant)}`
+    if (p.assistantThinking !== undefined && p.assistantThinking.length > 0) {
+      block += `\n${fieldIndent}assistantThinking: ${PanelService.yamlScalar(p.assistantThinking)}`
+    }
+    const calls = p.toolCalls ?? []
+    const results = p.toolResults ?? []
+    if (calls.length > 0) {
+      const callItemIndent = `${fieldIndent}  `
+      const callFieldIndent = `${callItemIndent}  `
+      block += `\n${fieldIndent}toolCalls:`
+      for (const c of calls) {
+        block += `\n${callItemIndent}- id: ${PanelService.yamlScalar(c.id)}`
+          + `\n${callFieldIndent}name: ${PanelService.yamlScalar(c.name)}`
+          + `\n${callFieldIndent}arguments: ${PanelService.yamlScalar(c.arguments)}`
+      }
+      // 只渲染能配对的部分：多出来的结果不会被注入，写出去只会误导
+      const pairs = Math.min(calls.length, results.length)
+      if (pairs > 0) {
+        block += `\n${fieldIndent}toolResults:`
+        for (let i = 0; i < pairs; i++) {
+          block += `\n${callItemIndent}- content: ${PanelService.yamlScalar(results[i].content)}`
+            + `\n${callFieldIndent}isError: ${results[i].isError === true ? 'true' : 'false'}`
+        }
+      }
+    }
+    return block
   }
 
   /** Render just the core `custom-first-control-prompt` loader row (4-space indent block). */
@@ -188,7 +268,7 @@ export class PanelService extends TypertRemoteService {
       ? sections.map(s => `          - name: ${PanelService.yamlScalar(s.name)}\n            order: ${Number(s.order) || 0}\n            text: ${PanelService.yamlScalar(s.text)}`).join('\n')
       : ''
     const hisBlock = history.length > 0
-      ? history.map(p => `          - user: ${PanelService.yamlScalar(p.user)}\n            assistant: ${PanelService.yamlScalar(p.assistant)}`).join('\n')
+      ? history.map(p => PanelService.pairBlock(p, '          ', '            ')).join('\n')
       : ''
     return '    - id: custom-first-control-prompt\n'
       + "      name: '@wm-coders/dsh-custom-first-control-prompt'\n"
@@ -212,7 +292,7 @@ export class PanelService extends TypertRemoteService {
       ? sections.map(s => `    - name: ${PanelService.yamlScalar(s.name)}\n      order: ${Number(s.order) || 0}\n      text: ${PanelService.yamlScalar(s.text)}`).join('\n')
       : ''
     const hisBlock = history.length > 0
-      ? history.map(p => `    - user: ${PanelService.yamlScalar(p.user)}\n      assistant: ${PanelService.yamlScalar(p.assistant)}`).join('\n')
+      ? history.map(p => PanelService.pairBlock(p, '    ', '      ')).join('\n')
       : ''
     return '- id: custom-first-control-prompt\n'
       + '  config:\n'
@@ -257,8 +337,14 @@ export class PanelService extends TypertRemoteService {
       const sep = existingRaw.endsWith('\n') ? '' : '\n'
       return existingRaw + sep + PanelService.coreOverrideBlock(config)
     }
-    const core = PanelService.coreBlock(config)
     const indent = (lines[coreIdx]?.match(/^\s*/)?.[0] ?? '').length
+    // Render the replacement at the matched row's own indent. A profile-layer
+    // override is column 0; the bundle layer's insert row is nested. Rewriting a
+    // column-0 row with the nested form dropped it inside the preceding block.
+    const rendered = PanelService.coreOverrideBlock(config)
+    const core = indent === 0
+      ? rendered
+      : rendered.split('\n').map(line => (line.length > 0 ? ' '.repeat(indent) + line : line)).join('\n')
     // The core block ends at the next same-or-lower-indent `- ` entry (e.g. a
     // sibling `    - id: ui-custom-first-control-prompt`); that entry is kept.
     let end = coreIdx + 1
@@ -468,7 +554,13 @@ export class PanelService extends TypertRemoteService {
     filtered.push({
       name: trimmed,
       sections: config.sections.map(s => ({ name: s.name, order: s.order, text: s.text, enabled: s.enabled })),
-      history: config.history.map(p => ({ user: p.user, assistant: p.assistant })),
+      history: config.history.map(p => ({
+        user: p.user,
+        assistant: p.assistant,
+        ...(p.assistantThinking === undefined ? {} : { assistantThinking: p.assistantThinking }),
+        ...(p.toolCalls === undefined ? {} : { toolCalls: p.toolCalls }),
+        ...(p.toolResults === undefined ? {} : { toolResults: p.toolResults }),
+      })),
       includeSubagents: config.includeSubagents,
     })
     const ok = await this.writeTemplates(filtered)

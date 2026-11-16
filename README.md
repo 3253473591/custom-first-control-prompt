@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-Deployment-configured prompt prefix. Ordered system-prompt sections render ahead of the deployment persona, and configured reference user/assistant exchanges are injected into **every ordinary conversation request** — as real alternating messages prepended on the request path (`llm/stream` interception, zero session-log writes). Static content renders byte-identically on every request, preserving prefix-cache reuse.
+Deployment-configured prompt prefix. Ordered system-prompt sections render ahead of the deployment persona, and configured reference user/assistant exchanges are injected into **every ordinary conversation request** — as real alternating messages prepended on the request path (`llm/stream` interception). No seed message is written to the session log; instead the effective configuration is mirrored once per session as an `ignorable` plugin record, so `dsh-session-yaml --emit-patch` can print it back as a paste-ready profile-patch entry without touching the model-visible surface. Static content renders byte-identically on every request, preserving prefix-cache reuse.
 
 ## Installation
 
@@ -61,7 +61,7 @@ Invalid configuration fails plugin load naming the offending entry: empty text, 
 The reference exchanges are built once at plugin activation into alternating real `Message` objects (deep-frozen, shared by reference across requests), then prepended onto every ordinary conversation request by an `llm/stream` waterfall listener:
 
 - **Clone and redispatch**: loop-built requests are deep-frozen and marker-tagged (`markAgentLoopRequest(deepFreeze(...))`) and never mutated; the listener clones the request, prepends the seed messages, and redispatches through `ctx.llm.stream`. The clone carries no loop marker, the agent-loop log-reconstruction invariant does not apply to it, and the discarded original is a pure `deriveMessages()` projection.
-- **Zero log writes**: seed messages live only on the request path — real turn numbering starts at 1 with no collisions, forks are ordinary copies, and compaction cannot shadow the reference history (every request re-injects it).
+- **No seed messages in the log**: the conversation log carries only the real turns — real turn numbering starts at 1 with no collisions, forks are ordinary copies, and compaction cannot shadow the reference history (every request re-injects it). One `ignorable` plugin record per session (`plugin:custom-first-control-prompt/injected`) mirrors the effective configuration (`sections`, `history`, `includeSubagents`) for log readers such as dsh-session-yaml; every field is a valid `Config` field, so the record can be pasted back into a profile patch. It never enters the model-visible surface.
 - **Scope filtering**: auxiliary calls (`purpose`-stamped, e.g. session-title, compaction) and hand-built requests (no `sessionId`) pass straight through; subagent-origin sessions are skipped by default (`includeSubagents: true` opts in).
 - **Panel verification**: not seeing the seed messages in the chat transcript is expected; use the panel's LLM listener to inspect the injected real request (Settings → "Custom first control prompt" → LLM listening, or the dock strip above the composer).
 
@@ -113,7 +113,7 @@ The reference history leads the message sequence byte-stably, keeping request pr
 
 ## Known limitations and deferred work
 
-- **The chat UI never shows the reference history** — the seeds live only on the request path; neither alternating messages nor framework rows appear in the conversation UI. Reconstructing model-visible content requires the session log **plus** the deployment config (the framework exposes no plugin event-type registry and `Session.append` cannot carry an `ignorable` envelope) — a deliberate, declared deviation from the harness log-reconstruction default.
+- **The chat UI never shows the reference history** — the seeds live only on the request path; neither alternating messages nor framework rows appear in the conversation UI. The effective configuration is mirrored into the session log as an `ignorable` plugin record (`appendPluginRecord`, harness >= 0.2), so `dsh-session-yaml --emit-patch` can reconstruct a paste-ready profile-patch entry; older harnesses keep no record.
 - **Seed text is model-visible reference material** — treat it as prompt text the model reads, not a trusted channel.
 - **No mid-session edits** — configuration changes take effect for new requests after a web restart; a compliant "edit while quiescent" surface-replacement event carrying a source seq reference is deferred.
 

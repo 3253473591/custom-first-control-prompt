@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.0] - 2026-11-11
+
+### Fixed — dsh 0.2.1-rc.2 alignment
+- `engines.dsh` and every `@deepseek-ai/dsh-*` peer declare the 0.2.x line (`>=0.2.0-0 <0.3.0`), so the 0.2.1-rc.2 compatibility gate admits the bundle instead of skipping it. `@deepseek-ai/dsh-client-ui-slots` is dropped from the peers (the client bundle never imports it) and `@deepseek-ai/dsh-client-ui-renderer` is declared, matching `dsh.client.inject`.
+- The panel resolves the profile patch file through `profileContext.patchPath` first, then through `settings.prepareDocument()` accepting the 0.2.x semantics (that call returns the patch file itself); the `…/profiles/web/cordis.patch.yml` derivation stays as the 0.1.x fallback. Without this the editor reported an empty configuration and no save could land.
+- Rewriting an existing core row keeps that row's own indentation: a second save used to render the row with the bundle layer's nested form, which dropped it inside the preceding patch entry and corrupted the file.
+- The dock strip's version marker follows the package version again (`v0.5.0`).
+
+### Added
+- The effective configuration is mirrored into the session log once per session as an `ignorable` plugin record (`plugin:custom-first-control-prompt/injected`): `{ sections, history, includeSubagents }`. Every field is a valid `Config` field, so the record can be pasted back into a profile patch and this plugin's schema accepts it unchanged (verified against `Config`).
+- The record is written for sections-only configurations too (the listener now installs for any configured content; without `history` it only records and passes the request through).
+- `dsh-session-yaml --emit-patch` turns the record back into a paste-ready `- id: custom-first-control-prompt` entry.
+- `recordInjectedHistory` exported for tests and hosts.
+
+### Changed
+- Requires `@deepseek-ai/dsh-session` (peer, >=0.2.0); on an older harness the record is skipped instead of failing the plugin load.
+- One record per session for a static configuration; editing the configuration (panel save) produces a new payload and therefore a new record (dsh-session-yaml renders them as a list and `--emit-patch` prints the latest).
+- README statements about "zero session-log writes" now describe the ignorable record precisely.
+
+### Note
+- `appendPluginRecord` is the harness' experimental plugin-record API. It is stable at runtime in 0.2.x, but a future 0.3.x may move it; re-check on harness upgrades.
+
 ## [0.3.0] - 2026-09-01
 
 ### Added

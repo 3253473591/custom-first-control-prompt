@@ -19,10 +19,23 @@ export interface PanelSectionView {
 
 /** One configured reference exchange as the panel shows it. */
 export interface PanelPairView {
-  /** User-side text of the exchange. */
-  user: string
+  /** User-side text of the exchange. Optional: empty means "assistant side only". */
+  user?: string
   /** Assistant-side text of the exchange. */
   assistant: string
+  /** Optional assistant-side chain-of-thought text. */
+  assistantThinking?: string
+  /** Forged tool invocations rendered as native `tool-call` blocks. */
+  toolCalls?: {
+    id: string
+    name: string
+    arguments: string
+  }[]
+  /** Results paired to `toolCalls` by index; must match its length. */
+  toolResults?: {
+    content: string
+    isError?: boolean
+  }[]
 }
 
 /** Parsed view of this plugin's entry inside the profile patch file. */

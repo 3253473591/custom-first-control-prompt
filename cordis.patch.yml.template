@@ -16,6 +16,23 @@
 # 提示：示例文本用中性测试内容（系统提示词001/用户发送001 这种），不要用
 # 「每条回复必须以句号结尾」之类的自指规则——规则性样例会让模型陷入规则复读。
 # 面板「配置编辑」保存生成的正是这种定向覆盖，与本样例等价。
+#
+# 思维链覆盖：每条参考对话的 assistant 侧可配 `assistantThinking`（可选）——
+# 注入时它会成为 assistant 消息的 reasoning 块（请求上送为 reasoning_content，
+# 推理模型在带工具请求中会把它拼进上下文），正文保持干净。不给则退回纯正文。
+#
+# 伪造工具调用：assistant 侧还可配 `toolCalls` + `toolResults`（可选）——
+# 注入时每条 `toolCalls[i]` 成为原生 tool-call 内容块，`toolResults[i]` 成为一条
+# 独立的 role:'user' + source.kind:'tool' 消息（带配对 callId）。provider 报文里
+# 会真的出现 assistant.tool_calls 和 role:"tool"，模型读到的是"我自己发起过这次
+# 调用"，而不是一段关于调用的叙述。
+#
+# 三条硬约束（违反会静默失效或 400）：
+#   1. toolResults 必须与 toolCalls 等长，索引配对；缺结果 = provider 直接 400。
+#   2. id 必须是常量字符串，建议 seed-call-<条目号>-<调用号>。每次请求都变的话，
+#      前缀缓存从第一个变化的 token 起全部失效。
+#   3. arguments 必须是合法 JSON 的**字符串**（下面用单引号包住最省事）。
+# 另外：工具名要与当前请求 tools 数组里的名字一致，否则模型会困惑。
 - id: custom-first-control-prompt
   config:
     sections:
@@ -27,4 +44,20 @@
         assistant: "助手回复001"
       - user: "用户发送002"
         assistant: "助手回复002"
+        assistantThinking: "思考示范：先拆需求，再给出简洁正文。"
+      # 伪造一轮工具调用的完整形状（不需要就整段删掉）：
+      - user: "帮我查一下这个包怎么用。"
+        assistant: "查到了，我整理一下。"
+        toolCalls:
+          - id: 'seed-call-2-0'
+            name: 'web_search'
+            arguments: '{"queries":["示例查询一","示例查询二"]}'
+        toolResults:
+          - content: |-
+              Sources:
+              - [示例来源](https://example.com/a) — 这是一个示例摘要。
+              - [另一个来源](https://example.com/b)
+
+              Cite the relevant URLs above as markdown links in your answer.
+            isError: false
     includeSubagents: true

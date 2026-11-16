@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-部署方配置的提示词前缀。有序的系统提示词段渲染在部署 persona 之前，配置的 user/assistant 参考对话被注入到**每一个普通对话请求**中——作为真实的交替 user/assistant 消息前置在请求路径上（`llm/stream` 请求拦截，会话日志零写入）。静态内容在每次请求中逐字节一致地渲染，从而保持前缀缓存复用。
+部署方配置的提示词前缀。有序的系统提示词段渲染在部署 persona 之前，配置的 user/assistant 参考对话被注入到**每一个普通对话请求**中——作为真实的交替 user/assistant 消息前置在请求路径上（`llm/stream` 请求拦截；聊天日志里不出现种子消息，当前生效的配置以一条 `ignorable` 插件记录镜像到会话日志，可用 `dsh-session-yaml --emit-patch` 导出成可直接粘回 profile patch 的条目）。静态内容在每次请求中逐字节一致地渲染，从而保持前缀缓存复用。
 
 ## 安装
 
@@ -55,20 +55,25 @@ dsh plugin --profile web remove @wm-coders/dsh-custom-first-control-prompt
 | `sections[].enabled` | `true` | `false` 时条目保留在配置中但不注册。 |
 | `sections[].text` | 必填 | 静态段文本。不要放入时间戳等易变值：任何变化都会从首个变化的 token 起破坏前缀复用。 |
 | `history` | — | 注入到每个普通对话请求的有序 `user`/`assistant` 参考对话；两者文本都必须非空，且不得包含保留标签（大小写不敏感：`<user>`、`<assistant>`、`<exchange>`、`<custom-history` 及所有闭合标签）。缺省或为空时不注入。 |
+| `history[].assistantThinking` | — | 可选。该条 assistant 侧的**思维链示范**：注入的 assistant 消息会携带 `reasoning` 块（请求上送为 `reasoning_content`，推理模型在带工具的请求中会把它拼进上下文），正文（`assistant`）保持干净。不给则退回纯正文。同样不得包含保留标签；空值按未配置处理。 |
+| `history[].toolCalls` | — | 可选。该条 assistant 侧的**伪造工具调用**：每条生成一个原生 `tool-call` 内容块（`id` / `name` / `arguments` 三字段）。`arguments` 必须是合法 JSON 的**字符串**；`id` 必须是**常量**（建议 `seed-call-<条目号>-<调用号>`），每次请求都变会从首个变化的 token 起破坏前缀复用；`name` 要与当前请求 `tools` 数组里的名字一致，否则模型会困惑。 |
+| `history[].toolResults` | — | 可选。与 `toolCalls` 按**索引一对一**配对的结果，每条生成一条独立的 `role:'user'` + `source.kind='tool'` 消息（带配对 `toolCallId`）。**必须与 `toolCalls` 等长**：只造调用不造结果，OpenAI 兼容 provider 直接 400；多出的项会被忽略。`content` 就是模型读到的那段文本，`isError` 默认 `false`。 |
 | `includeSubagents` | `false` | `false` 时跳过 header meta 标记为 subagent 来源的会话。 |
 
-配置错误会使插件加载失败并指明出错条目：文本为空、section 重名或 order 非有限数。`sections` 的逐条问题（空名/重名/坏 order/空文本）与 `history` 的逐对问题（空文本/内嵌保留标签）会**降级为跳过该条并告警**，不会拖垮整个插件树。
+配置错误会使插件加载失败并指明出错条目：文本为空、section 重名或 order 非有限数。`sections` 的逐条问题（空名/重名/坏 order/空文本）与 `history` 的逐对问题（空文本/内嵌保留标签/toolCalls 与 toolResults 数量不匹配/id 重复或为空/arguments 非法 JSON）会**降级为跳过该条并告警**，不会拖垮整个插件树。
+
+> **伪造工具调用与纯文本伪装的区别**：把调用过程写成 `assistant` 正文里的文字，模型只是"读到一段关于调用的叙述"；配 `toolCalls` + `toolResults` 则是注入真实的内容块，provider 报文里会出现 `assistant.tool_calls` 与 `role:"tool"` 消息 —— 模型读到的是**自己发起过这次调用**。后者要求 `tools` 数组里确实注册着同名工具。
 
 ## 注入机制
 
 参考对话在插件加载时一次性构建为交替的真实 `Message` 对象（深冻结、跨请求共享引用），随后在每个普通对话请求上由 `llm/stream` waterfall 监听器前置注入：
 
 - **克隆重分发**：循环构建的请求是深冻结且带 loop 标记的（`markAgentLoopRequest(deepFreeze(...))`），从不被修改；监听器克隆请求、前置种子消息、经 `ctx.llm.stream` 重新分发。克隆体无 loop 标记，agent-loop 的日志重建不变式不适用于它，被丢弃的原请求只是 `deriveMessages()` 的纯投影。
-- **零日志写入**：种子消息只存在于请求路径，不进会话日志——真实 turn 编号从 1 开始无冲突、fork 是普通副本、压缩无法遮蔽参考历史（每个请求都重新注入）。
+- **日志里没有种子消息**：种子只存在于请求路径——真实 turn 编号从 1 开始无冲突、fork 是普通副本、压缩无法遮蔽参考历史（每个请求都重新注入）。另每条会话写一条 `ignorable` 插件记录（`plugin:custom-first-control-prompt/injected`），内容是当前生效的完整配置（`sections` + `history` + `includeSubagents`）；它不进模型可见面、不改 turn 编号，日志读取器（dsh-session-yaml）可据此还原，并用 `--emit-patch` 输出可直接粘回 `cordis.patch.yml` 的条目——字段与本插件 `Config` 完全一致。
 - **范围过滤**：辅助调用（`purpose` 标记，如 session-title、compaction）与手工构造请求（无 `sessionId`）直接放行不注入；subagent 来源会话默认跳过（`includeSubagents: true` 开启）。
 - **面板验证**：聊天 transcript 看不到种子消息是预期行为；用面板「LLM 监听」直接查看注入后的真实请求（设置 → 「自定义优先控制提示词」→ LLM 监听，或对话输入框上方的 dock 条）。
 
-**验证注入生效**：新建会话并提问一个只有注入历史才能回答的问题（如「重复我们最早的那条用户消息」），模型答出配置内容即生效；`session.history` 里看不到种子消息（日志干净是特性而非故障）。
+**验证注入生效**：新建会话并提问一个只有注入历史才能回答的问题（如「重复我们最早的那条用户消息」），模型答出配置内容即生效；聊天 transcript 里看不到种子消息（这是特性），会话日志里只有那条 `ignorable` 配置记录。
 
 **面板保存的语义**：面板「配置编辑」保存向 profile `cordis.patch.yml` 写入**带 id 的定向覆盖**（非 insert，绝不与 bundle 层的行撞 id），只更新本插件核心行（`custom-first-control-prompt`）的配置，**保留文件里其它所有内容**——其它条目、注释、以及旧安装遗留的行。profile 无本插件行时，编辑器显示当前生效的组合配置（bundle 层默认值），保存即生成覆盖。
 
@@ -106,6 +111,16 @@ dsh plugin --profile web remove @wm-coders/dsh-custom-first-control-prompt
 [user]      the real prompt…
 ```
 
+配置了 `assistantThinking` 的 assistant 侧会在正文前先携带思维链通道（`reasoning` 块）：
+
+```markdown
+[user]      configured user text 2
+[assistant] <reasoning> configured thinking 2 </reasoning>
+[assistant] configured assistant text 2
+```
+
+`reasoning` 块对 deepseek 适配器序列化为 `reasoning_content`：带 `tools` 的请求（agent 普通对话请求）会把历史 `reasoning_content` 拼进上下文，因此参考思维链真实可见于模型；不带 `tools` 的辅助请求本插件不注入，不受影响。
+
 #### Token 影响
 
 每请求固定 1 份参考对话（不随轮次累积，压缩也不影响——每个请求重新前置同一份冻结消息序列）。
@@ -116,7 +131,7 @@ dsh plugin --profile web remove @wm-coders/dsh-custom-first-control-prompt
 
 ## 已知限制与延后工作
 
-- **聊天界面看不到参考历史** — 种子只存在于请求路径，会话 UI 既不显示交替消息也不显示框架行；模型可见内容的重建需要会话日志 + 部署配置（框架没有插件事件类型注册面，`Session.append` 也无法携带 `ignorable` 信封），这是对 harness 日志重建默认原则的有意偏离，已在此声明。
+- **聊天界面看不到参考历史** — 种子只存在于请求路径，会话 UI 既不显示交替消息也不显示框架行；生效配置以 `ignorable` 插件记录（`appendPluginRecord`，需要 harness >= 0.2）镜像进会话日志，内容是可直接粘回 profile patch 的 `Config`，旧版 harness 则不写记录。
 - **种子文本是模型可见的参考材料** — 部署方应将其视为模型读取的提示词文本，而非可信通道。
 - **不支持会话中段修改** — 配置变更在 web 重启后对新请求生效；合规的"静止时编辑"应追加带 source seq 引用的 surface 替换事件，已延后。
 
