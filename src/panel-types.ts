@@ -27,6 +27,8 @@ export interface PanelCaptureView {
   updatedAt: number
   /** Message count of the last captured request. */
   messages: number
+  /** Number of requests captured into the file so far (append-only). */
+  requests: number
   /** Human-readable failure reason; empty otherwise. */
   error: string
 }

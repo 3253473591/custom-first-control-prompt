@@ -161,7 +161,7 @@ node tools/session-jsonl-to-yaml.mjs <session.v4.jsonl> --turn 9 --steps 12,52 -
 
 会话标题旁有一个 `● 捕获中` 按钮，**新对话默认开启**；点一下变成 `Ⅱ 已暂停`，只影响当前对话。
 
-每次普通对话请求都会把该对话的**有效提示词 + 消息序列**覆盖写到
+每次普通对话请求都会把该对话的**有效提示词 + 消息序列**追加写到
 
 ```
 <profile>/cfcp-captures/<sessionId>.yml
@@ -190,6 +190,8 @@ messages:
       - name: "read"
         arguments: '{"file_path":"…"}'
 ```
+
+同一对话的捕获**一直叠加**：每份请求是一份 YAML 文档（`---` 分隔），文档里的 `request: N` 是序号（重启后按文件里已有的文档数续号）。
 
 这是**中间体**：捕获从不写 `cordis.patch.yml`（只有面板里手动保存配置才会动 profile patch）。
 想把它变成注入用的参考历史，用 `tools/session-jsonl-to-yaml.mjs` 或手写 `history` 片段。

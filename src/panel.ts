@@ -9,7 +9,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type {
   PanelAssembleResult,
@@ -136,6 +136,7 @@ export class PanelService extends TypertRemoteService {
       path: written?.path ?? '',
       updatedAt: written?.updatedAt ?? 0,
       messages: written?.messages ?? 0,
+      requests: written?.requests ?? 0,
       error: '',
     }
   }
@@ -158,7 +159,10 @@ export class PanelService extends TypertRemoteService {
     try {
       const record = options as GenerateOptions & Record<string, unknown>
       const messages = Array.isArray(record['messages']) ? record['messages'] as unknown[] : []
+      const path = `${dir}/${sessionId}.yml`
+      const request = await this.nextCaptureIndex(sessionId, path)
       const lines: string[] = [
+        `request: ${request}`,
         `sessionId: ${JSON.stringify(sessionId)}`,
         `updatedAt: ${JSON.stringify(new Date().toISOString())}`,
         `model: ${JSON.stringify(typeof record['model'] === 'string' ? record['model'] : '')}`,
@@ -198,14 +202,34 @@ export class PanelService extends TypertRemoteService {
         }
         if (images > 0) lines.push(`    images: ${images}`)
       }
-      const path = `${dir}/${sessionId}.yml`
       await mkdir(dir, { recursive: true })
-      await writeFile(path, `${lines.join('\n')}\n`, 'utf8')
-      this.captureWritten.set(sessionId, { path, updatedAt: Date.now(), messages: messages.length })
+      await appendFile(path, `${['---', ...lines].join('\n')}\n`, 'utf8')
+      this.captureIndex.set(sessionId, request)
+      this.captureWritten.set(sessionId, { path, updatedAt: Date.now(), messages: messages.length, requests: request })
     } catch (error) {
       this.ctx.logger?.warn('custom-first-control-prompt could not write the capture file: %s',
         error instanceof Error ? error.message : String(error))
     }
+  }
+
+  /**
+   * Next document index for one conversation, derived by counting the
+   * already-appended documents on the first capture after a restart.
+   * @param sessionId - the session the capture belongs to.
+   * @param path - the capture file.
+   * @returns the 1-based index of the document about to be appended.
+   */
+  private async nextCaptureIndex(sessionId: string, path: string): Promise<number> {
+    const cached = this.captureIndex.get(sessionId)
+    if (cached !== undefined) return cached + 1
+    let existing = 0
+    try {
+      const raw = await readFile(path, 'utf8')
+      existing = raw.split('\n').filter(line => line.trim() === '---').length
+    } catch {
+      existing = 0
+    }
+    return existing + 1
   }
 
   private static messageText(msg: unknown): string {

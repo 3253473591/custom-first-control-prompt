@@ -157,5 +157,6 @@ export interface PanelCaptureView {
     path: string;
     updatedAt: number;
     messages: number;
+    requests: number;
     error: string;
 }

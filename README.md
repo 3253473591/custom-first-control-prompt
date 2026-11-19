@@ -146,8 +146,8 @@ with an image result plus a final reasoning + text turn).
 A `● Capturing` button sits beside the conversation title; **new conversations capture by
 default** and clicking it pauses just that conversation (`Ⅱ Paused`).
 
-Every ordinary request overwrites one file per conversation with the **effective prompt and
-the message sequence**:
+Every ordinary request **appends** to one file per conversation the **effective prompt and the
+message sequence**:
 
 ```
 <profile>/cfcp-captures/<sessionId>.yml
@@ -174,6 +174,9 @@ messages:
       - name: "read"
         arguments: '{"file_path":"…"}'
 ```
+
+One conversation accumulates documents: each request is a YAML document separated by `---`, and
+its `request: N` index continues from the documents already in the file after a restart.
 
 It is an **intermediate artifact**: capture never writes `cordis.patch.yml` (only an explicit
 panel save touches the profile patch). Feed it through `tools/session-jsonl-to-yaml.mjs` or
