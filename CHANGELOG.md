@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.8.1] - 2026-11-20
+
+### Added - 面板接受 YAML 块标量
+- 面板读取 profile patch 时支持块标量：`|`、`|-`、`|+`、`>`、`>-`，含缩进指示符（如 `|2`）；
+  `sections[].text`、`history[].user/assistant/assistantThinking`、`toolCalls[].arguments`、
+  `toolResults[].content` 全都可以用块标量书写，不再被读成字面量 `|-` 或丢行。
+- 折叠标量（`>`）按 YAML 规则把换行折成空格、空行保留为换行；chomping（`-` 去尾、默认保留一个换行、`+` 全保留）同样生效。
+- 新增 `examples/block-scalars.yml`：全用块标量书写的可用样例。
+
+### Fixed
+- 不带 `-` 的嵌套写法 `user:` / `time:` 之前被忽略（解析器只认 `- user:`），现在也识别。
+
+### Note
+- 面板保存仍然用**内联标量**重写（`"…\n…"`）：内容不变、YAML 等价，但手写的块标量格式会被规范化。
+
 ## [0.8.0] - 2026-11-20
 
 ### Changed - 捕获改为追加，不再覆盖

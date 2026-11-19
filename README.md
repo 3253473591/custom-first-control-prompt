@@ -182,6 +182,24 @@ It is an **intermediate artifact**: capture never writes `cordis.patch.yml` (onl
 panel save touches the profile patch). Feed it through `tools/session-jsonl-to-yaml.mjs` or
 hand-write a `history` fragment to reuse it as seeded reference history.
 
+### YAML block scalars
+
+The panel's patch reader accepts inline scalars and block scalars alike; these two are equivalent:
+
+```yaml
+text: "first line\nsecond line"
+```
+
+```yaml
+text: |-
+  first line
+  second line
+```
+
+Both `|`, `|-`, `|+`, `>`, `>-` and indentation indicators (`|2`) are supported; see
+`examples/block-scalars.yml` for a complete sample. Note that a panel **save** rewrites values as
+inline scalars: the content is preserved, the scalar style is normalized.
+
 ## Known limitations and deferred work
 
 - **The chat UI never shows the reference history** — the seeds live only on the request path; neither alternating messages nor framework rows appear in the conversation UI. The effective configuration is mirrored into the session log as an `ignorable` plugin record (`appendPluginRecord`, harness >= 0.2), so `dsh-session-yaml --emit-patch` can reconstruct a paste-ready profile-patch entry; older harnesses keep no record.

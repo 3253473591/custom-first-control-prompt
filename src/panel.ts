@@ -331,7 +331,103 @@ export class PanelService extends TypertRemoteService {
     return out
   }
 
-  private static parseBlock(raw: string): PanelConfigView {
+  /**
+   * Expand YAML block scalars into inline scalars.
+   *
+   * The panel's patch reader is a line scanner over known fields, so a value
+   * written as a block scalar (`|-`, `|+`, `>`, with optional indentation
+   * indicators) would otherwise be read as the literal header text and its body
+   * lines dropped. Rewriting each block into the quoted single-line form the
+   * scanner already understands keeps one parser for both syntaxes.
+   * @param raw - patch file text.
+   * @returns the same text with every block scalar folded into a quoted scalar.
+   */
+  private static expandBlockScalars(raw: string): string {
+    const lines = raw.split(/\r?\n/)
+    const out: string[] = []
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] ?? ''
+      const match = /^(\s*(?:-\s+)?[A-Za-z0-9_.-]+\s*:\s*)([|>])([+-]?)([1-9])?\s*$/.exec(line)
+      if (match === null) {
+        out.push(line)
+        continue
+      }
+      const style = match[2] === '>' ? 'folded' : 'literal'
+      const chomp = match[3] ?? ''
+      const explicit = match[4] === undefined ? undefined : Number(match[4])
+      const block = PanelService.readBlockScalar(lines, i, style, chomp, explicit)
+      out.push(`${match[1]}${PanelService.yamlScalar(block.text)}`)
+      i = block.next - 1
+    }
+    return out.join('\n')
+  }
+
+  /**
+   * Read one block-scalar body starting at its header line.
+   * @param lines - patch file lines.
+   * @param headerIndex - index of the `key: |-` line.
+   * @param style - literal (`|`) or folded (`>`).
+   * @param chomp - chomping indicator: '', '-' (strip), '+' (keep).
+   * @param explicitIndent - an explicit indentation indicator, when given.
+   * @returns the scalar text and the index of the first line after the block.
+   */
+  private static readBlockScalar(
+    lines: readonly string[],
+    headerIndex: number,
+    style: 'literal' | 'folded',
+    chomp: string,
+    explicitIndent: number | undefined,
+  ): { text: string; next: number } {
+    const body: string[] = []
+    let indent = explicitIndent
+    let i = headerIndex + 1
+    for (; i < lines.length; i++) {
+      const line = lines[i] ?? ''
+      if (line.trim() === '') {
+        body.push('')
+        continue
+      }
+      const leading = line.length - line.trimStart().length
+      if (indent === undefined) {
+        if (leading === 0) break
+        indent = leading
+      } else if (leading < indent) {
+        break
+      }
+      body.push(line.slice(indent))
+    }
+    // trailing blank lines are chomping material, never content
+    let trailing = 0
+    while (body.length > 0 && body[body.length - 1] === '') {
+      body.pop()
+      trailing += 1
+    }
+    const text = style === 'folded' ? PanelService.foldBlock(body) : body.join('\n')
+    if (text.length === 0) return { text: '', next: i }
+    if (chomp === '-') return { text, next: i }
+    if (chomp === '+') return { text: text + '\n'.repeat(trailing + 1), next: i }
+    return { text: `${text}\n`, next: i }
+  }
+
+  /** Fold block lines the way a `>` scalar does: newlines become spaces, blank lines become newlines. */
+  private static foldBlock(body: readonly string[]): string {
+    let out = ''
+    let pendingBreak = false
+    for (const line of body) {
+      if (line === '') {
+        pendingBreak = true
+        out += '\n'
+        continue
+      }
+      if (out.length > 0 && !out.endsWith('\n')) out += ' '
+      out += line
+      pendingBreak = false
+    }
+    return out
+  }
+
+  private static parseBlock(rawInput: string): PanelConfigView {
+    const raw = PanelService.expandBlockScalars(rawInput)
     const out: PanelConfigView = { found: false, sections: [], history: [], includeSubagents: false }
     if (raw.indexOf('custom-first-control-prompt') < 0) return out
     out.found = true
@@ -377,6 +473,10 @@ export class PanelService extends TypertRemoteService {
           cur.user = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
         } else if (cur !== null && t.indexOf('- userImages:') === 0) {
           cur.userImages = PanelService.parseInlineList(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('user:') === 0 && !t.startsWith('-')) {
+          cur.user = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && 'assistant' in cur && sub === '' && t.indexOf('time:') === 0) {
+          cur.time = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
         } else if (cur !== null && 'assistant' in cur && t.indexOf('userTime:') === 0) {
           cur.userTime = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
         } else if (cur !== null && 'assistant' in cur && t.indexOf('userImages:') === 0) {

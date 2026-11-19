@@ -196,6 +196,23 @@ messages:
 这是**中间体**：捕获从不写 `cordis.patch.yml`（只有面板里手动保存配置才会动 profile patch）。
 想把它变成注入用的参考历史，用 `tools/session-jsonl-to-yaml.mjs` 或手写 `history` 片段。
 
+### YAML 块标量
+
+面板的 patch 读取器同时接受内联标量与块标量，下面两种写法等价：
+
+```yaml
+text: "第一行\n第二行"
+```
+
+```yaml
+text: |-
+  第一行
+  第二行
+```
+
+`|`、`|-`、`|+`、`>`、`>-` 与缩进指示符（`|2`）都支持；完整样例见 `examples/block-scalars.yml`。
+注意：面板**保存**时统一用内联标量重写（内容不变，标量样式会被规范化）。
+
 ## 已知限制与延后工作
 
 - **聊天界面看不到参考历史** — 种子只存在于请求路径，会话 UI 既不显示交替消息也不显示框架行；生效配置以 `ignorable` 插件记录（`appendPluginRecord`，需要 harness >= 0.2）镜像进会话日志，内容是可直接粘回 profile patch 的 `Config`，旧版 harness 则不写记录。

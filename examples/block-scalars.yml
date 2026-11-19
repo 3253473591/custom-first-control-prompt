@@ -1,0 +1,34 @@
+# 面板的 patch 读取器同时支持内联标量与 YAML 块标量（|、|-、|+、>、>-，含缩进指示符）。
+# 这份文件就是一个"全用块标量写"的可用样例；把整段贴进 profile 的 cordis.patch.yml 即可。
+- id: custom-first-control-prompt
+  config:
+    sections:
+      - name: "system"
+        order: -50
+        text: |-
+          第一行系统提示（块标量）
+          第二行：包含 "引号" 与 \ 反斜杠
+            缩进行保持两个空格
+    history:
+      - time: "2026-11-20T01:20:00+08:00"
+        user: |-
+          用户第一行
+          用户第二行
+        assistantTime: "2026-11-20T01:20:05+08:00"
+        assistantThinking: |-
+          思考第一行
+          思考第二行
+        assistant: |-
+          正文第一行
+          正文第二行
+        toolCalls:
+          - id: "seed-call-0-0"
+            name: "read"
+            arguments: '{"file_path":"D:/tmp/a.txt"}'
+        toolResults:
+          - content: |-
+              结果第一行
+              结果第二行
+            isError: false
+            time: "2026-11-20T01:20:06+08:00"
+    includeSubagents: false
