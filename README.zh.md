@@ -191,7 +191,12 @@ messages:
         arguments: '{"file_path":"…"}'
 ```
 
-同一对话的捕获**一直叠加**：每次请求一份 `kind: request`（提示词 + 消息序列），这一轮的助手输出再追加一份 `kind: response`（`thinking` / `assistant` / `toolCalls` / `finish`），两份文档的 `request` 序号一一对应。
+同一对话的捕获**一直叠加且不重复**（`format: 2`）：
+
+- `kind: request`：这次请求新增的消息（`newMessages`），每条带 `id` 与 `time`；文件里已有的前缀不再重写，``previousMessages`` / ``totalMessages`` 说明它接在哪
+- `kind: response`：这一轮的助手输出（`thinking` / `assistant` / `toolCalls` / `finish`），带 `time`
+- 进度写在 `<capture>.state.json`，重启后接着写
+- 旧格式文件可用 `node tools/compact-capture.mjs <file> --write` 压缩成新格式
 
 同一对话的捕获**一直叠加**：每份请求是一份 YAML 文档（`---` 分隔），文档里的 `request: N` 是序号（重启后按文件里已有的文档数续号）。
 

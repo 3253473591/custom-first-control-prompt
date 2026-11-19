@@ -175,9 +175,14 @@ messages:
         arguments: '{"file_path":"…"}'
 ```
 
-One conversation accumulates documents: one `kind: request` per request (prompt + message
-sequence) and one `kind: response` for that turn's assistant output (`thinking` / `assistant` /
-`toolCalls` / `finish`), matched by the `request` index. Each request is a YAML document
+One conversation accumulates documents without repeating itself (`format: 2`):
+
+- `kind: request` holds only the messages this request added (`newMessages`), each with an `id` and
+  a `time`; the prefix already in the file is never rewritten (`previousMessages` / `totalMessages`)
+- `kind: response` holds that turn's assistant output (`thinking` / `assistant` / `toolCalls` /
+  `finish`) with its own `time`
+- progress lives in `<capture>.state.json`, so a restart continues instead of restarting
+- older files compact with `node tools/compact-capture.mjs <file> --write` Each request is a YAML document
 separated by `---`, and its `request: N` index continues from the documents already in the file
 after a restart.
 

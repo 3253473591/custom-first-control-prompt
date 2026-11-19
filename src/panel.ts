@@ -9,7 +9,8 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
-import { appendFile, mkdir, readFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type {
   PanelAssembleResult,
@@ -55,6 +56,20 @@ interface PanelSystemPrompt {
 export const PANEL_SERVICE_KEY = 'custom-first-control-prompt-panel'
 
 /** The web panel management service. */
+/** Incremental capture progress for one conversation. */
+interface CaptureState {
+  /** Number of the last request document written. */
+  nextRequest: number
+  /** How many leading messages the file already holds. */
+  capturedCount: number
+  /** Id of the last captured message, for prefix verification. */
+  lastMessageId: string
+  /** sha256 of the system prompt last written in full. */
+  systemSha256: string
+  /** sha256 of the last response text, to avoid repeating it as a message. */
+  assistantSha256: string
+}
+
 export class PanelService extends TypertRemoteService {
   private readonly ring: PanelRequestView[] = []
   private seq = 0
@@ -72,7 +87,11 @@ export class PanelService extends TypertRemoteService {
    */
   private readonly captureEnabled = new Map<string, boolean>()
   /** Last capture written per session, for the header button's tooltip/state. */
-  private readonly captureWritten = new Map<string, { path: string; updatedAt: number; messages: number }>()
+  private readonly captureWritten = new Map<string, { path: string; updatedAt: number; messages: number; requests: number }>()
+  /** Next capture document index per session; derived from the file on first capture. */
+  private readonly captureIndex = new Map<string, number>()
+  /** Incremental capture progress per session. */
+  private readonly captureState = new Map<string, CaptureState>()
 
   constructor(ctx: Context, effective?: PanelConfigView) {
     super(ctx, 'custom-first-control-prompt-panel')
@@ -142,12 +161,15 @@ export class PanelService extends TypertRemoteService {
   }
 
   /**
-   * Write one conversation's real request into its own capture file.
+   * Write the new part of one conversation's request into its own capture file.
    *
    * The file is the intermediate artifact between a live conversation and a
    * reference-history patch: the effective prompt plus the ordered message
-   * sequence, never a write into the profile patch. One file per conversation,
-   * overwritten on every request so it always holds the latest request.
+   * sequence, never a write into the profile patch. Documents are appended, and
+   * only messages the file does not hold yet are written — the shared prefix of
+   * consecutive requests would otherwise repeat the whole conversation in every
+   * document. Each message carries the id it has in the session and the time it
+   * was first observed.
    * @param sessionId - the session the request belongs to.
    * @param options - the request as the model will see it (seed-injected).
    * @returns completion after the file is written, or when capture is paused.
@@ -160,56 +182,149 @@ export class PanelService extends TypertRemoteService {
       const record = options as GenerateOptions & Record<string, unknown>
       const messages = Array.isArray(record['messages']) ? record['messages'] as unknown[] : []
       const path = `${dir}/${sessionId}.yml`
-      const request = await this.nextCaptureIndex(sessionId, path)
-      const lines: string[] = [
-        `request: ${request}`,
-        `sessionId: ${JSON.stringify(sessionId)}`,
-        `updatedAt: ${JSON.stringify(new Date().toISOString())}`,
-        `model: ${JSON.stringify(typeof record['model'] === 'string' ? record['model'] : '')}`,
-        `provider: ${JSON.stringify(typeof record['provider'] === 'string' ? record['provider'] : '')}`,
-        `purpose: ${JSON.stringify(typeof record['purpose'] === 'string' ? record['purpose'] : '')}`,
-      ]
+      const state = await this.readCaptureState(sessionId, path)
+      const request = state.nextRequest + 1
+      const now = new Date().toISOString()
       const systemText = messages
         .filter(msg => (msg as Record<string, unknown>)?.['role'] === 'system')
         .map(msg => PanelService.messageText(msg))
         .join('\n\n')
-      lines.push('system: |-')
-      for (const line of (systemText.length > 0 ? systemText : '').split('\n')) lines.push(`  ${line}`)
-      lines.push('messages:')
-      for (const msg of messages) {
-        const m = typeof msg === 'object' && msg !== null ? msg as Record<string, unknown> : {}
-        const role = typeof m['role'] === 'string' ? m['role'] : 'unknown'
-        const content = Array.isArray(m['content']) ? m['content'] as unknown[] : []
-        const thinking = content
-          .filter(block => (block as Record<string, unknown>)?.['type'] === 'reasoning')
-          .map(block => String((block as Record<string, unknown>)['text'] ?? ''))
-          .join('\n')
-        const calls = content.filter(block => (block as Record<string, unknown>)?.['type'] === 'tool-call')
-        const images = content.filter(block => (block as Record<string, unknown>)?.['type'] === 'image').length
-        lines.push(`  - role: ${JSON.stringify(role)}`)
-        if (thinking.length > 0) {
-          lines.push('    thinking: |-')
-          for (const line of thinking.split('\n')) lines.push(`      ${line}`)
+      const systemSha = PanelService.sha256(systemText)
+      // The history is a prefix extension while the last captured message is still
+      // in place; compaction or a changed seed rewrites it, which re-dumps once.
+      const prefixHolds = state.capturedCount > 0
+        && state.capturedCount <= messages.length
+        && (state.lastMessageId === '' || PanelService.messageId(messages[state.capturedCount - 1]) === state.lastMessageId)
+      const fresh = state.capturedCount === 0 || prefixHolds ? messages.slice(state.capturedCount) : messages
+      const rewritten = state.capturedCount > 0 && !prefixHolds
+      const lines: string[] = [
+        'format: 2',
+        'kind: request',
+        `request: ${request}`,
+        `sessionId: ${JSON.stringify(sessionId)}`,
+        `time: ${JSON.stringify(now)}`,
+        `previousMessages: ${rewritten ? 0 : state.capturedCount}`,
+        `totalMessages: ${messages.length}`,
+        `model: ${JSON.stringify(typeof record['model'] === 'string' ? record['model'] : '')}`,
+        `provider: ${JSON.stringify(typeof record['provider'] === 'string' ? record['provider'] : '')}`,
+        `purpose: ${JSON.stringify(typeof record['purpose'] === 'string' ? record['purpose'] : '')}`,
+        `systemSha256: ${JSON.stringify(systemSha)}`,
+      ]
+      if (rewritten) lines.push('rewritten: true')
+      if (systemSha !== state.systemSha256) {
+        lines.push('system: |-')
+        for (const line of systemText.split('\n')) lines.push(`  ${line}`)
+      }
+      if (fresh.length === 0) {
+        lines.push('newMessages: []')
+      } else {
+        lines.push('newMessages:')
+        for (const msg of fresh) {
+          const m = typeof msg === 'object' && msg !== null ? msg as Record<string, unknown> : {}
+          const content = Array.isArray(m['content']) ? m['content'] as unknown[] : []
+          const role = typeof m['role'] === 'string' ? m['role'] : 'unknown'
+          const text = PanelService.messageText(msg)
+          const thinking = content
+            .filter(block => (block as Record<string, unknown>)?.['type'] === 'reasoning')
+            .map(block => String((block as Record<string, unknown>)['text'] ?? ''))
+            .join('\n')
+          const calls = content.filter(block => (block as Record<string, unknown>)?.['type'] === 'tool-call')
+          const images = content.filter(block => (block as Record<string, unknown>)?.['type'] === 'image').length
+          lines.push(`  - id: ${JSON.stringify(PanelService.messageId(msg))}`)
+          lines.push(`    role: ${JSON.stringify(role)}`)
+          lines.push(`    time: ${JSON.stringify(now)}`)
+          // The response document already carries this assistant text and the time
+          // the stream finished, so the diff only records that it was seen again.
+          if (role === 'assistant' && state.assistantSha256.length > 0 && PanelService.sha256(text) === state.assistantSha256) {
+            lines.push('    sameAsResponse: true')
+            continue
+          }
+          if (thinking.length > 0) {
+            lines.push('    thinking: |-')
+            for (const line of thinking.split('\n')) lines.push(`      ${line}`)
+          }
+          if (text.length > 0) {
+            lines.push('    text: |-')
+            for (const line of text.split('\n')) lines.push(`      ${line}`)
+          }
+          if (calls.length > 0) {
+            lines.push('    toolCalls:')
+            for (const call of calls) {
+              const c = call as Record<string, unknown>
+              lines.push(`      - name: ${JSON.stringify(String(c['name'] ?? ''))}`)
+              lines.push(`        arguments: ${JSON.stringify(String(c['arguments'] ?? ''))}`)
+            }
+          }
+          if (images > 0) lines.push(`    images: ${images}`)
         }
-        lines.push('    text: |-')
-        for (const line of PanelService.messageText(msg).split('\n')) lines.push(`      ${line}`)
-        for (const call of calls) {
-          const c = call as Record<string, unknown>
-          lines.push('    toolCalls:')
-          lines.push(`      - name: ${JSON.stringify(String(c['name'] ?? ''))}`)
-          lines.push(`        arguments: ${JSON.stringify(String(c['arguments'] ?? ''))}`)
-          break
-        }
-        if (images > 0) lines.push(`    images: ${images}`)
       }
       await mkdir(dir, { recursive: true })
       await appendFile(path, `${['---', ...lines].join('\n')}\n`, 'utf8')
+      const last = messages.length > 0 ? PanelService.messageId(messages[messages.length - 1]) : ''
+      await this.writeCaptureState(sessionId, path, {
+        nextRequest: request,
+        capturedCount: messages.length,
+        lastMessageId: last,
+        systemSha256: systemSha,
+        assistantSha256: state.assistantSha256,
+      })
       this.captureIndex.set(sessionId, request)
       this.captureWritten.set(sessionId, { path, updatedAt: Date.now(), messages: messages.length, requests: request })
     } catch (error) {
       this.ctx.logger?.warn('custom-first-control-prompt could not write the capture file: %s',
         error instanceof Error ? error.message : String(error))
     }
+  }
+
+  /**
+   * Read the incremental progress of one conversation, persisted beside its file
+   * so a restart continues the sequence instead of re-dumping the history.
+   * @param sessionId - the session the capture belongs to.
+   * @param path - the capture file; the state lives at `<path>.state.json`.
+   * @returns the stored state, or a fresh one.
+   */
+  private async readCaptureState(sessionId: string, path: string): Promise<CaptureState> {
+    const memory = this.captureState.get(sessionId)
+    if (memory !== undefined) return memory
+    try {
+      const parsed = JSON.parse(await readFile(`${path}.state.json`, 'utf8')) as Partial<CaptureState>
+      const restored: CaptureState = {
+        nextRequest: typeof parsed.nextRequest === 'number' ? parsed.nextRequest : 0,
+        capturedCount: typeof parsed.capturedCount === 'number' ? parsed.capturedCount : 0,
+        lastMessageId: typeof parsed.lastMessageId === 'string' ? parsed.lastMessageId : '',
+        systemSha256: typeof parsed.systemSha256 === 'string' ? parsed.systemSha256 : '',
+        assistantSha256: typeof parsed.assistantSha256 === 'string' ? parsed.assistantSha256 : '',
+      }
+      this.captureState.set(sessionId, restored)
+      return restored
+    } catch {
+      const fresh: CaptureState = { nextRequest: 0, capturedCount: 0, lastMessageId: '', systemSha256: '', assistantSha256: '' }
+      this.captureState.set(sessionId, fresh)
+      return fresh
+    }
+  }
+
+  /** Persist one conversation's capture progress. */
+  private async writeCaptureState(sessionId: string, path: string, state: CaptureState): Promise<void> {
+    this.captureState.set(sessionId, state)
+    try {
+      await writeFile(`${path}.state.json`, `${JSON.stringify(state, null, 2)}\n`, 'utf8')
+    } catch (error) {
+      this.ctx.logger?.warn('custom-first-control-prompt could not persist the capture state: %s',
+        error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  /** sha256 of a string, for prompt/response de-duplication. */
+  private static sha256(value: string): string {
+    return createHash('sha256').update(value, 'utf8').digest('hex')
+  }
+
+  /** The session message id, when the message carries one. */
+  private static messageId(msg: unknown): string {
+    const m = typeof msg === 'object' && msg !== null ? msg as Record<string, unknown> : {}
+    const id = m['id']
+    return typeof id === 'string' ? id : ''
   }
 
   /**
@@ -340,13 +455,17 @@ export class PanelService extends TypertRemoteService {
     if (dir === null) return
     const path = `${dir}/${sessionId}.yml`
     const request = this.captureWritten.get(sessionId)?.requests ?? 0
+    const now = new Date().toISOString()
+    const assistantText = slots.filter(slot => slot.kind === 'text').map(slot => slot.text).join('')
     const lines: string[] = [
+      'format: 2',
       'kind: response',
       `sessionId: ${JSON.stringify(sessionId)}`,
       `request: ${request}`,
-      `updatedAt: ${JSON.stringify(new Date().toISOString())}`,
+      `time: ${JSON.stringify(now)}`,
       `finish: ${JSON.stringify(finish)}`,
       `complete: ${complete ? 'true' : 'false'}`,
+      `assistantSha256: ${JSON.stringify(PanelService.sha256(assistantText))}`,
     ]
     const thinking = slots.filter(slot => slot.kind === 'reasoning').map(slot => slot.text).join('\n')
     const text = slots.filter(slot => slot.kind === 'text').map(slot => slot.text).join('')
@@ -366,6 +485,8 @@ export class PanelService extends TypertRemoteService {
     }
     await mkdir(dir, { recursive: true })
     await appendFile(path, `${['---', ...lines].join('\n')}\n`, 'utf8')
+    const state = await this.readCaptureState(sessionId, path)
+    await this.writeCaptureState(sessionId, path, { ...state, assistantSha256: PanelService.sha256(assistantText) })
     const written = this.captureWritten.get(sessionId)
     if (written !== undefined) this.captureWritten.set(sessionId, { ...written, updatedAt: Date.now() })
   }

@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0] - 2026-11-20
+
+### Changed - 捕获文件改成增量 + 逐条时间戳（format 2）
+- **不再重复**：每次请求只写文件里还没有的消息。之前每份 request 文档都存完整快照，同一句话在几十份文档里各出现一次；现在按会话前缀比较（用消息 id 校验），只追加新增部分，重写检测到前缀变化时记 `rewritten: true` 并整段重来。
+- **逐条时间**：每条消息带 `time`（首次观察到它的时间），文档本身带 `time`（请求时刻）；响应文档也带 `time`（流结束时刻）。
+- **系统提示按需写**：`system` 只在 sha 变化时写入，其余文档只留 `systemSha256`。
+- **助手回复不重复**：下一次请求里出现的那条 assistant 消息，如果与上一份 response 文档正文一致，只记 `sameAsResponse: true` 不再重复正文。
+- **进度落盘**：`<capture>.state.json` 记录 `nextRequest / capturedCount / lastMessageId / systemSha256 / assistantSha256`，重启后接着写，不会重来一遍。
+- 新增 `tools/compact-capture.mjs`：把旧格式文件压缩成新格式（去重 + 补时间），`--write` 就地替换并留备份。
+
+### Measured
+- 同一会话：505 KB（25 份快照）→ 80 KB（1 份 34 条消息 + 12 份回复文档）。
+
 ## [0.8.2] - 2026-11-20
 
 ### Added - 捕获同时记录助手回复（响应侧）
