@@ -243,6 +243,133 @@ export class PanelService extends TypertRemoteService {
     }).join('')
   }
 
+  // ---- response capture (the other half of the transcript) ----
+
+  /** Buffered assistant output for one streamed response, keyed by block index. */
+  private responseBlocks = new Map<number, { kind: 'text' | 'reasoning' | 'tool-call'; text: string; id: string; name: string; arguments: string }>()
+
+  private responseSlot(index: number, kind: 'text' | 'reasoning' | 'tool-call'): { kind: 'text' | 'reasoning' | 'tool-call'; text: string; id: string; name: string; arguments: string } {
+    const existing = this.responseBlocks.get(index)
+    if (existing !== undefined && existing.kind === kind) return existing
+    const created = { kind, text: '', id: '', name: '', arguments: '' }
+    this.responseBlocks.set(index, created)
+    return created
+  }
+
+  /**
+   * Watch one streamed response and append it to the same capture file.
+   *
+   * A request-path capture can only ever hold the conversation up to that
+   * request, so the assistant's answer to it would never appear. Tapping the
+   * stream adds the missing half: each chunk is passed through untouched and,
+   * when the stream settles abort or not, one `kind: response` document is
+   * appended next to the request it answers.
+   * @param sessionId - the session the response belongs to.
+   * @param stream - the provider stream to observe.
+   * @returns the same chunks, unchanged.
+   */
+  async *tapResponse<T>(sessionId: string, stream: AsyncIterable<T>): AsyncGenerator<T> {
+    if (this.captureEnabled.get(sessionId) === false) {
+      yield* stream
+      return
+    }
+    this.responseBlocks = new Map()
+    let finish = ''
+    let complete = false
+    try {
+      for await (const chunk of stream) {
+        this.collectResponseChunk(chunk, (value) => { finish = value })
+        yield chunk
+      }
+      complete = true
+    } finally {
+      try {
+        await this.appendResponse(sessionId, finish, complete)
+      } catch (error) {
+        this.ctx.logger?.warn('custom-first-control-prompt could not append the response capture: %s',
+          error instanceof Error ? error.message : String(error))
+      }
+    }
+  }
+
+  /** Fold one stream chunk into the response buffer. */
+  private collectResponseChunk(chunk: unknown, onFinish: (reason: string) => void): void {
+    const c = typeof chunk === 'object' && chunk !== null ? chunk as Record<string, unknown> : undefined
+    if (c === undefined) return
+    const type = typeof c['type'] === 'string' ? c['type'] : ''
+    const index = typeof c['index'] === 'number' ? c['index'] : 0
+    if (type === 'text-delta') {
+      this.responseSlot(index, 'text').text += String(c['text'] ?? '')
+    } else if (type === 'reasoning-delta') {
+      this.responseSlot(index, 'reasoning').text += String(c['text'] ?? '')
+    } else if (type === 'tool-call-delta') {
+      const slot = this.responseSlot(index, 'tool-call')
+      if (typeof c['id'] === 'string' && c['id'].length > 0) slot.id = c['id']
+      if (typeof c['name'] === 'string' && c['name'].length > 0) slot.name = c['name']
+      slot.arguments += String(c['argumentsDelta'] ?? '')
+    } else if (type === 'block-end') {
+      const block = typeof c['block'] === 'object' && c['block'] !== null ? c['block'] as Record<string, unknown> : undefined
+      if (block !== undefined && block['type'] === 'text') {
+        const slot = this.responseSlot(index, 'text')
+        if (typeof block['text'] === 'string' && block['text'].length > 0) slot.text = block['text']
+      } else if (block !== undefined && block['type'] === 'reasoning') {
+        const slot = this.responseSlot(index, 'reasoning')
+        if (typeof block['text'] === 'string' && block['text'].length > 0) slot.text = block['text']
+      } else if (block !== undefined && block['type'] === 'tool-call') {
+        const slot = this.responseSlot(index, 'tool-call')
+        if (typeof block['id'] === 'string') slot.id = block['id']
+        if (typeof block['name'] === 'string') slot.name = block['name']
+        if (typeof block['arguments'] === 'string') slot.arguments = block['arguments']
+      }
+    } else if (type === 'finish') {
+      const reason = c['reason']
+      if (typeof reason === 'object' && reason !== null && typeof (reason as Record<string, unknown>)['kind'] === 'string') {
+        onFinish(String((reason as Record<string, unknown>)['kind']))
+      } else if (typeof reason === 'string') {
+        onFinish(reason)
+      }
+    }
+  }
+
+  /** Append the buffered assistant message as one `kind: response` document. */
+  private async appendResponse(sessionId: string, finish: string, complete: boolean): Promise<void> {
+    if (this.captureEnabled.get(sessionId) === false) return
+    const slots = [...this.responseBlocks.values()].filter(slot => slot.text.length > 0 || slot.name.length > 0)
+    if (slots.length === 0) return
+    const dir = await this.captureDir()
+    if (dir === null) return
+    const path = `${dir}/${sessionId}.yml`
+    const request = this.captureWritten.get(sessionId)?.requests ?? 0
+    const lines: string[] = [
+      'kind: response',
+      `sessionId: ${JSON.stringify(sessionId)}`,
+      `request: ${request}`,
+      `updatedAt: ${JSON.stringify(new Date().toISOString())}`,
+      `finish: ${JSON.stringify(finish)}`,
+      `complete: ${complete ? 'true' : 'false'}`,
+    ]
+    const thinking = slots.filter(slot => slot.kind === 'reasoning').map(slot => slot.text).join('\n')
+    const text = slots.filter(slot => slot.kind === 'text').map(slot => slot.text).join('')
+    const calls = slots.filter(slot => slot.kind === 'tool-call')
+    if (thinking.length > 0) {
+      lines.push('thinking: |-')
+      for (const line of thinking.split('\n')) lines.push(`  ${line}`)
+    }
+    lines.push('assistant: |-')
+    for (const line of text.split('\n')) lines.push(`  ${line}`)
+    if (calls.length > 0) {
+      lines.push('toolCalls:')
+      for (const call of calls) {
+        lines.push(`  - name: ${JSON.stringify(call.name)}`)
+        lines.push(`    arguments: ${JSON.stringify(call.arguments)}`)
+      }
+    }
+    await mkdir(dir, { recursive: true })
+    await appendFile(path, `${['---', ...lines].join('\n')}\n`, 'utf8')
+    const written = this.captureWritten.get(sessionId)
+    if (written !== undefined) this.captureWritten.set(sessionId, { ...written, updatedAt: Date.now() })
+  }
+
   // ---- patch file plumbing ----
 
   private async patchPath(): Promise<string | null> {

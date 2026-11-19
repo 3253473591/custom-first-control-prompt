@@ -175,8 +175,11 @@ messages:
         arguments: '{"file_path":"…"}'
 ```
 
-One conversation accumulates documents: each request is a YAML document separated by `---`, and
-its `request: N` index continues from the documents already in the file after a restart.
+One conversation accumulates documents: one `kind: request` per request (prompt + message
+sequence) and one `kind: response` for that turn's assistant output (`thinking` / `assistant` /
+`toolCalls` / `finish`), matched by the `request` index. Each request is a YAML document
+separated by `---`, and its `request: N` index continues from the documents already in the file
+after a restart.
 
 It is an **intermediate artifact**: capture never writes `cordis.patch.yml` (only an explicit
 panel save touches the profile patch). Feed it through `tools/session-jsonl-to-yaml.mjs` or

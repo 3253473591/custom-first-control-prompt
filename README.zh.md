@@ -191,6 +191,8 @@ messages:
         arguments: '{"file_path":"…"}'
 ```
 
+同一对话的捕获**一直叠加**：每次请求一份 `kind: request`（提示词 + 消息序列），这一轮的助手输出再追加一份 `kind: response`（`thinking` / `assistant` / `toolCalls` / `finish`），两份文档的 `request` 序号一一对应。
+
 同一对话的捕获**一直叠加**：每份请求是一份 YAML 文档（`---` 分隔），文档里的 `request: N` 是序号（重启后按文件里已有的文档数续号）。
 
 这是**中间体**：捕获从不写 `cordis.patch.yml`（只有面板里手动保存配置才会动 profile patch）。

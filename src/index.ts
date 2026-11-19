@@ -528,7 +528,7 @@ export function apply(ctx: Context, config: Config): void {
       }
     }
     // Sections-only configuration: the record is all this request needs.
-    if (seedMessages.length === 0) return next()
+    if (seedMessages.length === 0) return panel === undefined ? next() : panel.tapResponse(String(sessionId), next())
     // The seed pair lands AFTER the leading system run (0.1.5 puts the
     // assembled system prompt there) and before the real conversation. With a
     // pre-0.1.5 harness the leading run is empty and this is the old behavior.
@@ -538,7 +538,8 @@ export function apply(ctx: Context, config: Config): void {
       messages: [...leading, ...seedMessages, ...rest],
     }
     reentry.add(cloned)
-    return ctx.llm.stream(cloned)
+    const injected = ctx.llm.stream(cloned)
+    return panel === undefined ? injected : panel.tapResponse(String(sessionId), injected)
   }, { prepend: true })
 }
 

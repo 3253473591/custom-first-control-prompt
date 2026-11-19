@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.8.2] - 2026-11-20
+
+### Added - 捕获同时记录助手回复（响应侧）
+- 之前捕获挂在**请求**上，只能拿到"到这一条请求为止"的对话，本轮助手回复要等下一条请求才会出现（只发一条消息时永远看不到回复）。
+- 现在监听器会**轻量 tap 流式响应**：chunk 原样透传，流结束后把这一轮助手输出作为一份 `kind: response` 文档追加进同一个文件，带 `request: <序号>` 与请求对应。
+- response 文档字段：`thinking`（reasoning）、`assistant`（正文）、`toolCalls`（工具调用）、`finish`（stop / tool-calls / aborted…）、`complete`（是否正常结束）。
+- 捕获关闭（暂停）时既不写请求也不写响应；流被中断时也会写一份 `complete: false` 的部分结果。
+
 ## [0.8.1] - 2026-11-20
 
 ### Added - 面板接受 YAML 块标量
