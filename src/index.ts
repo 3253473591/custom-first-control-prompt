@@ -426,7 +426,7 @@ export function apply(ctx: Context, config: Config): void {
   // it manages the patch entry and captures requests for the browser half.
   // The composed-config snapshot lets the panel show the bundle-layer defaults
   // while the profile patch still carries no row.
-  new PanelService(ctx, {
+  const panelService = new PanelService(ctx, {
     found: false,
     sections: (config.sections ?? []).map(section => ({
       name: section.name,
@@ -443,7 +443,7 @@ export function apply(ctx: Context, config: Config): void {
     })),
     includeSubagents: config.includeSubagents === true,
   })
-  const panel = ctx.get('custom-first-control-prompt-panel') as PanelService | undefined
+  const panel = panelService ?? ctx.get('custom-first-control-prompt-panel') as PanelService | undefined
   const sections = config.sections ?? []
   const { clean: mountableSections, problems: sectionProblems } = partitionSections(sections)
   for (const problem of sectionProblems) ctx.logger.warn('skipping a configured section: %s', problem)

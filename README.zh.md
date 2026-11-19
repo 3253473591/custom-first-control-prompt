@@ -157,6 +157,43 @@ node tools/session-jsonl-to-yaml.mjs <session.v4.jsonl> --turn 9 --steps 12,52 -
 
 生成的样例见 `examples/session-76a36330-turn9.yml`（截图工具调用 + 图片结果 + 末轮思考与正文）。
 
+## 按对话捕获（中间体）
+
+会话标题旁有一个 `● 捕获中` 按钮，**新对话默认开启**；点一下变成 `Ⅱ 已暂停`，只影响当前对话。
+
+每次普通对话请求都会把该对话的**有效提示词 + 消息序列**覆盖写到
+
+```
+<profile>/cfcp-captures/<sessionId>.yml
+```
+
+形如：
+
+```yaml
+sessionId: "session-…"
+updatedAt: "2026-11-19T16:09:38.381Z"
+model: "deepseek-flash"
+provider: "deepseek-official"
+purpose: ""
+system: |-
+  …真实系统提示词…
+messages:
+  - role: "user"
+    text: |-
+      真实用户消息
+  - role: "assistant"
+    thinking: |-
+      …思考…
+    text: |-
+      …正文…
+    toolCalls:
+      - name: "read"
+        arguments: '{"file_path":"…"}'
+```
+
+这是**中间体**：捕获从不写 `cordis.patch.yml`（只有面板里手动保存配置才会动 profile patch）。
+想把它变成注入用的参考历史，用 `tools/session-jsonl-to-yaml.mjs` 或手写 `history` 片段。
+
 ## 已知限制与延后工作
 
 - **聊天界面看不到参考历史** — 种子只存在于请求路径，会话 UI 既不显示交替消息也不显示框架行；生效配置以 `ignorable` 插件记录（`appendPluginRecord`，需要 harness >= 0.2）镜像进会话日志，内容是可直接粘回 profile patch 的 `Config`，旧版 harness 则不写记录。

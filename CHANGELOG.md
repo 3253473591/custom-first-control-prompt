@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.7.0] - 2026-11-20
+
+### Added - 按对话捕获（中间体，不写 profile patch）
+- 会话标题旁新增按钮：`● 捕获中` / `Ⅱ 已暂停`，**新对话默认捕获**，点一下只暂停该对话。
+- 捕获写成一个对话一个文件：`<profile>/cfcp-captures/<sessionId>.yml`，内容为**有效提示词 + 消息序列**（role / thinking / text / toolCalls / 图片数），每个请求覆盖写，永远是最新一次请求。
+- 捕获**不写** `cordis.patch.yml`：插件只在面板里手动保存配置时才动 profile patch；捕获文件是给 `tools/session-jsonl-to-yaml.mjs` / 手工改写参考历史用的中间产物。
+- 新增 Remote：`capture-get` / `capture-set`（按会话读写开关），宿主侧 typert 线协议同步补齐。
+
+### Fixed
+- 监听器里的面板服务改为直接持有实例（`new PanelService` 的返回值），此前 `ctx.get('custom-first-control-prompt-panel')` 返回 `undefined`，导致「注入」开关在该路径上从未真正生效、捕获也从未被调用。
+
 ## [0.6.0] - 2026-11-20
 
 ### Added - 完整 transcript 五要素（时间 / 思考 / 正文 / 工具调用 / 结果）

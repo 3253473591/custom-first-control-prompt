@@ -141,6 +141,44 @@ node tools/session-jsonl-to-yaml.mjs <session.v4.jsonl> --turn 9 --steps 12,52 -
 See `examples/session-76a36330-turn9.yml` for a generated sample (screenshot tool call
 with an image result plus a final reasoning + text turn).
 
+## Per-conversation capture (intermediate artifact)
+
+A `● Capturing` button sits beside the conversation title; **new conversations capture by
+default** and clicking it pauses just that conversation (`Ⅱ Paused`).
+
+Every ordinary request overwrites one file per conversation with the **effective prompt and
+the message sequence**:
+
+```
+<profile>/cfcp-captures/<sessionId>.yml
+```
+
+```yaml
+sessionId: "session-…"
+updatedAt: "2026-11-19T16:09:38.381Z"
+model: "deepseek-flash"
+provider: "deepseek-official"
+purpose: ""
+system: |-
+  …the real system prompt…
+messages:
+  - role: "user"
+    text: |-
+      a real user message
+  - role: "assistant"
+    thinking: |-
+      …reasoning…
+    text: |-
+      …visible text…
+    toolCalls:
+      - name: "read"
+        arguments: '{"file_path":"…"}'
+```
+
+It is an **intermediate artifact**: capture never writes `cordis.patch.yml` (only an explicit
+panel save touches the profile patch). Feed it through `tools/session-jsonl-to-yaml.mjs` or
+hand-write a `history` fragment to reuse it as seeded reference history.
+
 ## Known limitations and deferred work
 
 - **The chat UI never shows the reference history** — the seeds live only on the request path; neither alternating messages nor framework rows appear in the conversation UI. The effective configuration is mirrored into the session log as an `ignorable` plugin record (`appendPluginRecord`, harness >= 0.2), so `dsh-session-yaml --emit-patch` can reconstruct a paste-ready profile-patch entry; older harnesses keep no record.

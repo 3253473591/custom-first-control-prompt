@@ -151,3 +151,11 @@ export interface PanelAssembleResult {
     error?: string;
 }
 //# sourceMappingURL=panel-types.d.ts.map
+/** One conversation capture switch and its last written file. */
+export interface PanelCaptureView {
+    enabled: boolean;
+    path: string;
+    updatedAt: number;
+    messages: number;
+    error: string;
+}

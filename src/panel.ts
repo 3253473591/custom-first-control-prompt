@@ -9,9 +9,11 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { GenerateOptions } from '@deepseek-ai/dsh-llm'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { Remote, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
 import type {
   PanelAssembleResult,
+  PanelCaptureView,
   PanelConfigReadResult,
   PanelConfigView,
   PanelRequestView,
@@ -64,6 +66,13 @@ export class PanelService extends TypertRemoteService {
   activeTemplate = ''
   /** Composed plugin config snapshot, shown when the profile patch has no row. */
   private readonly effective: PanelConfigView | undefined
+  /**
+   * Per-session capture switch, keyed by session id. Absent means "capturing":
+   * a new conversation starts capturing, and pausing only affects that one.
+   */
+  private readonly captureEnabled = new Map<string, boolean>()
+  /** Last capture written per session, for the header button's tooltip/state. */
+  private readonly captureWritten = new Map<string, { path: string; updatedAt: number; messages: number }>()
 
   constructor(ctx: Context, effective?: PanelConfigView) {
     super(ctx, 'custom-first-control-prompt-panel')
@@ -108,6 +117,106 @@ export class PanelService extends TypertRemoteService {
     } catch (error) {
       this.ctx.logger?.warn('custom-first-control-prompt panel request capture failed: %s', String(error))
     }
+  }
+
+  // ---- per-session capture files (the intermediate artifact) ----
+
+  /** Directory holding one capture file per conversation, beside the profile patch. */
+  private async captureDir(): Promise<string | null> {
+    const patch = await this.patchPath()
+    if (patch === null) return null
+    const cut = patch.lastIndexOf('/')
+    return cut > 0 ? `${patch.slice(0, cut)}/cfcp-captures` : null
+  }
+
+  private captureView(sessionId: string): PanelCaptureView {
+    const written = this.captureWritten.get(sessionId)
+    return {
+      enabled: this.captureEnabled.get(sessionId) !== false,
+      path: written?.path ?? '',
+      updatedAt: written?.updatedAt ?? 0,
+      messages: written?.messages ?? 0,
+      error: '',
+    }
+  }
+
+  /**
+   * Write one conversation's real request into its own capture file.
+   *
+   * The file is the intermediate artifact between a live conversation and a
+   * reference-history patch: the effective prompt plus the ordered message
+   * sequence, never a write into the profile patch. One file per conversation,
+   * overwritten on every request so it always holds the latest request.
+   * @param sessionId - the session the request belongs to.
+   * @param options - the request as the model will see it (seed-injected).
+   * @returns completion after the file is written, or when capture is paused.
+   */
+  async captureRequest(sessionId: string, options: GenerateOptions): Promise<void> {
+    if (this.captureEnabled.get(sessionId) === false) return
+    const dir = await this.captureDir()
+    if (dir === null) return
+    try {
+      const record = options as GenerateOptions & Record<string, unknown>
+      const messages = Array.isArray(record['messages']) ? record['messages'] as unknown[] : []
+      const lines: string[] = [
+        `sessionId: ${JSON.stringify(sessionId)}`,
+        `updatedAt: ${JSON.stringify(new Date().toISOString())}`,
+        `model: ${JSON.stringify(typeof record['model'] === 'string' ? record['model'] : '')}`,
+        `provider: ${JSON.stringify(typeof record['provider'] === 'string' ? record['provider'] : '')}`,
+        `purpose: ${JSON.stringify(typeof record['purpose'] === 'string' ? record['purpose'] : '')}`,
+      ]
+      const systemText = messages
+        .filter(msg => (msg as Record<string, unknown>)?.['role'] === 'system')
+        .map(msg => PanelService.messageText(msg))
+        .join('\n\n')
+      lines.push('system: |-')
+      for (const line of (systemText.length > 0 ? systemText : '').split('\n')) lines.push(`  ${line}`)
+      lines.push('messages:')
+      for (const msg of messages) {
+        const m = typeof msg === 'object' && msg !== null ? msg as Record<string, unknown> : {}
+        const role = typeof m['role'] === 'string' ? m['role'] : 'unknown'
+        const content = Array.isArray(m['content']) ? m['content'] as unknown[] : []
+        const thinking = content
+          .filter(block => (block as Record<string, unknown>)?.['type'] === 'reasoning')
+          .map(block => String((block as Record<string, unknown>)['text'] ?? ''))
+          .join('\n')
+        const calls = content.filter(block => (block as Record<string, unknown>)?.['type'] === 'tool-call')
+        const images = content.filter(block => (block as Record<string, unknown>)?.['type'] === 'image').length
+        lines.push(`  - role: ${JSON.stringify(role)}`)
+        if (thinking.length > 0) {
+          lines.push('    thinking: |-')
+          for (const line of thinking.split('\n')) lines.push(`      ${line}`)
+        }
+        lines.push('    text: |-')
+        for (const line of PanelService.messageText(msg).split('\n')) lines.push(`      ${line}`)
+        for (const call of calls) {
+          const c = call as Record<string, unknown>
+          lines.push('    toolCalls:')
+          lines.push(`      - name: ${JSON.stringify(String(c['name'] ?? ''))}`)
+          lines.push(`        arguments: ${JSON.stringify(String(c['arguments'] ?? ''))}`)
+          break
+        }
+        if (images > 0) lines.push(`    images: ${images}`)
+      }
+      const path = `${dir}/${sessionId}.yml`
+      await mkdir(dir, { recursive: true })
+      await writeFile(path, `${lines.join('\n')}\n`, 'utf8')
+      this.captureWritten.set(sessionId, { path, updatedAt: Date.now(), messages: messages.length })
+    } catch (error) {
+      this.ctx.logger?.warn('custom-first-control-prompt could not write the capture file: %s',
+        error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  private static messageText(msg: unknown): string {
+    const m = typeof msg === 'object' && msg !== null ? msg as Record<string, unknown> : undefined
+    if (typeof m?.['content'] === 'string') return m['content']
+    if (!Array.isArray(m?.['content'])) return ''
+    return (m['content'] as unknown[]).map((block) => {
+      if (typeof block === 'string') return block
+      const b = typeof block === 'object' && block !== null ? block as Record<string, unknown> : undefined
+      return b?.['type'] === 'text' && typeof b['text'] === 'string' ? b['text'] : ''
+    }).join('')
   }
 
   // ---- patch file plumbing ----
@@ -538,6 +647,20 @@ export class PanelService extends TypertRemoteService {
     void agent
     this.paused = paused === true
     return { requests: this.ring.slice(), paused: this.paused, dockVisible: this.dockVisible, injectionEnabled: this.injectionEnabled, activeTemplate: this.activeTemplate }
+  }
+
+  /** Read this conversation's capture switch and last written file. */
+  @Remote('capture-get')
+  captureGet(agent: Agent): PanelCaptureView {
+    return this.captureView(String(agent.session.id))
+  }
+
+  /** Turn this conversation's capture file on or off. */
+  @Remote('capture-set')
+  captureSet(agent: Agent, enabled: boolean): PanelCaptureView {
+    const sessionId = String(agent.session.id)
+    this.captureEnabled.set(sessionId, enabled === true)
+    return this.captureView(sessionId)
   }
 
   /** Clear the captured request ring. */

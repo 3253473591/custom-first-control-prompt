@@ -17,6 +17,20 @@ export interface PanelSectionView {
   text: string
 }
 
+/** One conversation's capture switch and last written capture file. */
+export interface PanelCaptureView {
+  /** Whether this conversation keeps writing its capture file. */
+  enabled: boolean
+  /** Absolute path of the last capture file, empty before the first request. */
+  path: string
+  /** Epoch milliseconds of the last write, 0 before the first request. */
+  updatedAt: number
+  /** Message count of the last captured request. */
+  messages: number
+  /** Human-readable failure reason; empty otherwise. */
+  error: string
+}
+
 /** One configured reference exchange as the panel shows it. */
 export interface PanelPairView {
   /** User-side text of the exchange. Optional: empty means "assistant side only". */
