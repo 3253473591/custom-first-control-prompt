@@ -1,0 +1,21 @@
+- id: custom-first-control-prompt
+  config:
+    sections: []
+    history:
+    - time: "2026-11-18T02:08:10+08:00"
+      user: "收尾吧，如果是做小程序的话是不是就不用考虑域名问题了？"
+      assistantTime: "2026-11-18T02:09:13+08:00"
+      assistant: ""
+      toolCalls:
+        - id: "call_00_ET_5TdSfKuDvSYAyOEBMqnT2759"
+          name: "mcp__chrome-devtools-mcp__take_screenshot"
+          arguments: "{\"pageId\": 1}"
+      toolResults:
+        - content: "Took a screenshot of the current page's viewport."
+          isError: false
+          time: "2026-11-18T02:09:13+08:00"
+          images: ["C:\\Users\\Administrator\\Downloads\\dsh-session-session-76a36330-8de0-4ba8-8c83-e56b906c1ea4\\media\\sha256_9af04fa774f14c54029472d86956a56013bd31fc2422092f81cf28a945b462a5.png"]
+    - assistantTime: "2026-11-18T02:11:02+08:00"
+      assistant: "收尾完成，构建和运行都验证过了。\n\n## 一、收尾结果（证据）\n\n**构建**：`pnpm run build` exit 0，`vue-tsc` 类型检查通过，产出 11 个文件 / 283 KB。\n\n**桌面 1440×900**（生产构建 `vite preview` 实拍）：右侧栏宽 320px，`position: sticky` 生效（top 113px）。卡片列表改 `columns-*` 瀑布流后，长名字（如「宫舞茉歌」）和多标签卡片不再撑高整行、留出空洞。\n\n**移动 390×844**：吸底胶囊正常，点开底部抽屉，Esc 可关闭（原来只有弹窗能 Esc，抽屉不行，已补）。\n\n**Console**：改前有两条问题，改完清零——\n\n| 阶段 | Console |\n|---|---|\n| 改前 | `form field element should have id or name (count: 7)`、`Duplicate form field id (count: 6)` |\n| 改后 | **无任何 error / warn / issue** |\n\n其中 duplicate id 是真 bug：我第一版在 [App.vue](个人兼职网站/src/App.vue) 里放了**两个** `CalculatorPanel` 实例（一个 `hidden lg:block`、一个 `lg:hidden`），CSS 隐藏但组件照样挂载，等于两份完整表单在跑。现在改成单实例（`<aside>` 常驻，PC 靠宽度约束、移动靠 `fixed` 胶囊脱离文档流），DOM 里 `#tuning-basicLines` 只剩 1 个。\n\n改动文件：[App.vue](个人兼职网站/src/App.vue)、[CalculatorPanel.vue](个人兼职网站/src/components/CalculatorPanel.vue)、[SingerCard.vue](个人兼职网站/src/components/SingerCard.vue)、[SingerDir…"
+      assistantThinking: "All clean. Both earlier jobs are gone from the list (finished/killed and removed), only the killed preview job shows.\n\nNow write the final answer:\n1. Wrap-up summary with evidence.\n2. Answer the mini program domain question — correct the premise.\n\nFor the mini program question, be accurate:\n\n微信小程序不是\"不用考虑域名\"，而是换了一套更严的规则：\n- 需要 request/socket/uploadFile/downloadFile 域名白名单，必须 HTTPS + 已 ICP 备案，不能填 IP 或 localhost。没配的域名请求直接失败（\"不在以下 request 合法域名列表中\"）。开发工具可勾\"不校验合法域名\"，但只限调试。\n- 小程序自身也要 ICP 备案（2024 年起境内主体强制，未备案不能上架）。\n\n真正\"免掉域名\"的只有一种情况：**零网络请求的纯本地小程序**。这个站正好属于这种——算价、试听（Web Audio 本地合成）、复制约稿单全是纯前端，唯一的外联是二维码图片（可以打包进包里）+ 复制微信号。\n\n但换成小程序会引入更麻烦的硬伤（对\"个人接单引流\"这个目标而言）：\n1. 外链基本废掉：web-view 需要「业务域名」备案且个人主体一般无权限；B站主页、VSQX/MidiShow 资源库这些跳转做不了，只能复制链接让用户自己粘贴。\n2. 私域引流被卡：小程序里放个人微信二维码 + 引导添加，是审核明令禁止的（\"诱导添加私人联系方式\"），长按识别二维码添加个人微信也基本不可用。这正好是这个站的核心转化路径。\n3. 类目过不了：个人主体可选类目有限，虚拟服务（调音/混音/DDSP）交易类目基本要走企业主体 + 资质。\n4. 试听体验更差：Web Audi…"
+    includeSubagents: false

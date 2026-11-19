@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0] - 2026-11-20
+
+### Added - 完整 transcript 五要素（时间 / 思考 / 正文 / 工具调用 / 结果）
+- 每条参考对话支持时间戳：用户侧 `time`（同义 `userTime`）、assistant 侧 `assistantTime`、工具结果 `time`。取值 ISO-8601 文本或 epoch 毫秒，注入时渲染成该消息正文的第一行 `[YYYY-MM-DD HH:mm:ss ±HH:MM]`（dsh 的 Message 没有时间字段，时间只能以文本形式让模型看到；ISO 文本保留作者写的墙钟与偏移）。
+- 支持图片内容块：用户侧 `userImages`、工具结果 `images`，取本地路径或 `data:` URL；加载时经 attachments 存储落成真实的内容寻址 image 块（读图场景），文件缺失/类型不支持只丢弃该图并告警。
+- 纯工具调用步：`assistant` 允许为空（不再要求正文非空），只要该条还有 `toolCalls`。
+- 新增 `tools/session-jsonl-to-yaml.mjs`：把 `session.v4.jsonl` 转成本插件的 `history` YAML（`--turn` / `--steps` / `--with-user` / `--with-images` / `--max-chars`）。
+- 新增 `examples/session-76a36330-turn9.yml`：真实会话转出的两条代表性参考对话（截图工具调用 + 图片结果 + 末轮思考与正文）。
+
+### Fixed
+- 面板保存不再丢弃 `time` / `userImages` / `toolCalls` / `toolResults`：typert 线协议 schema、YAML 解析与渲染均补齐（此前保存会静默丢掉工具调用）。
+- 会话日志的 `plugin:custom-first-control-prompt/injected` 记录不再因可选字段为 `undefined` 被整条拒绝（session 的 JSON 快照要求无损序列化）。
+
 ## [0.5.0] - 2026-11-11
 
 ### Fixed — dsh 0.2.1-rc.2 alignment

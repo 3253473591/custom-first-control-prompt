@@ -111,6 +111,36 @@ A fixed single copy of the reference history per request (it never accumulates a
 
 The reference history leads the message sequence byte-stably, keeping request prefixes reusable.
 
+## Time, thinking, text, tool calls, results
+
+One reference exchange can mirror a real transcript's five parts:
+
+| Field | Side | Meaning |
+|---|---|---|
+| `time` / `userTime` | user | user-message timestamp |
+| `assistantTime` | assistant | assistant-message timestamp |
+| `assistantThinking` | assistant | thinking (a `reasoning` block) |
+| `assistant` | assistant | visible text (empty is allowed for a pure tool-call step) |
+| `toolCalls[]` | assistant | tool commands (native `tool-call` blocks) |
+| `toolResults[]` | paired by index | results, each may carry `time` and `images` |
+| `userImages[]` | user | image blocks on the user message |
+
+Timestamps take ISO-8601 (offset recommended) or epoch milliseconds and render as the
+first line of that message's text, `[YYYY-MM-DD HH:mm:ss ±HH:MM]` — a dsh `Message`
+carries no time field, so time reaches the model as text only (ISO text keeps the wall
+clock and offset you wrote; no time-zone translation). Images take local paths or
+`data:` URLs, are stored through the attachment service into real content-addressed
+image blocks, and a missing or unsupported file costs that one image (with a warning).
+
+Convert a real session log into this YAML:
+
+```bash
+node tools/session-jsonl-to-yaml.mjs <session.v4.jsonl> --turn 9 --steps 12,52 --with-user
+```
+
+See `examples/session-76a36330-turn9.yml` for a generated sample (screenshot tool call
+with an image result plus a final reasoning + text turn).
+
 ## Known limitations and deferred work
 
 - **The chat UI never shows the reference history** — the seeds live only on the request path; neither alternating messages nor framework rows appear in the conversation UI. The effective configuration is mirrored into the session log as an `ignorable` plugin record (`appendPluginRecord`, harness >= 0.2), so `dsh-session-yaml --emit-patch` can reconstruct a paste-ready profile-patch entry; older harnesses keep no record.

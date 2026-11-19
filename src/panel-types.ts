@@ -21,8 +21,16 @@ export interface PanelSectionView {
 export interface PanelPairView {
   /** User-side text of the exchange. Optional: empty means "assistant side only". */
   user?: string
+  /** User-side timestamp (ISO-8601 text or epoch milliseconds), rendered model-visibly. */
+  time?: string | number
+  /** Explicit alias of {@link time}. */
+  userTime?: string | number
+  /** User-side image references (local paths or `data:` URLs). */
+  userImages?: string[]
   /** Assistant-side text of the exchange. */
   assistant: string
+  /** Assistant-side timestamp. */
+  assistantTime?: string | number
   /** Optional assistant-side chain-of-thought text. */
   assistantThinking?: string
   /** Forged tool invocations rendered as native `tool-call` blocks. */
@@ -35,6 +43,10 @@ export interface PanelPairView {
   toolResults?: {
     content: string
     isError?: boolean
+    /** Result timestamp. */
+    time?: string | number
+    /** Image references carried by the result. */
+    images?: string[]
   }[]
 }
 

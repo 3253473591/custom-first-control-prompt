@@ -33,6 +33,16 @@
 #      前缀缓存从第一个变化的 token 起全部失效。
 #   3. arguments 必须是合法 JSON 的**字符串**（下面用单引号包住最省事）。
 # 另外：工具名要与当前请求 tools 数组里的名字一致，否则模型会困惑。
+#
+# 时间戳：每条参考对话的用户侧可配 `time`（`userTime` 为同义名），assistant 侧配
+# `assistantTime`，工具结果可配 `time`。取值是 ISO-8601 文本（建议带偏移）或
+# epoch 毫秒；注入时渲染成该消息正文的第一行 `[YYYY-MM-DD HH:mm:ss ±HH:MM]` ——
+# dsh 的 Message 本身没有时间字段，所以时间只能以文本形式让模型看到。
+#
+# 图片（读图场景）：用户侧可配 `userImages`，工具结果可配 `images`，取值是本地
+# 文件路径或 `data:` URL 的列表；插件在加载时把文件写入 attachments 存储并生成
+# 真实 image 内容块（目标路由需支持图像输入）。文件缺失/格式不支持只丢弃该张图
+# 并告警，不影响整条注入。
 - id: custom-first-control-prompt
   config:
     sections:
@@ -45,11 +55,25 @@
       - user: "用户发送002"
         assistant: "助手回复002"
         assistantThinking: "思考示范：先拆需求，再给出简洁正文。"
+      # 时间戳 + 工具调用 + 图片结果的完整一条（不需要就整段删掉）：
+      - time: "2026-11-18T02:08:10+08:00"
+        user: "帮我截个图看看这个页面。"
+        assistantTime: "2026-11-18T02:09:13+08:00"
+        assistant: ""
+        toolCalls:
+          - id: 'seed-call-2-0'
+            name: 'mcp__chrome-devtools-mcp__take_screenshot'
+            arguments: '{"pageId": 1}'
+        toolResults:
+          - content: "Took a screenshot of the current page's viewport."
+            isError: false
+            time: "2026-11-18T02:09:14+08:00"
+            images: ["D:/shots/page.png"]
       # 伪造一轮工具调用的完整形状（不需要就整段删掉）：
       - user: "帮我查一下这个包怎么用。"
         assistant: "查到了，我整理一下。"
         toolCalls:
-          - id: 'seed-call-2-0'
+          - id: 'seed-call-3-0'
             name: 'web_search'
             arguments: '{"queries":["示例查询一","示例查询二"]}'
         toolResults:

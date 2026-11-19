@@ -79,8 +79,20 @@ export interface HistoryPair {
    * （reasoning → 正文 → tool-call）。适合"只示范一次调用、不需要提问"的场景。
    */
   user?: string
+  /**
+   * 用户侧时间戳：ISO-8601 文本（建议带偏移，如 `2026-11-19T20:15:03+08:00`）
+   * 或 epoch 毫秒。model 可见：渲染成正文前的一行 `[YYYY-MM-DD HH:mm:ss ±HH:MM]`。
+   * `userTime` 是同一字段的别名，两者都给时 `userTime` 优先。
+   */
+  time?: SeedTime
+  /** 用户侧时间戳的显式名字（优先于 `time`）。 */
+  userTime?: SeedTime
+  /** 用户消息里附带的图片块：本地文件路径或 `data:` URL。 */
+  userImages?: readonly string[]
   /** Assistant-side text of the exchange. */
   assistant: string
+  /** Assistant 侧时间戳，渲染规则同 `time`。 */
+  assistantTime?: SeedTime
   /**
    * Optional assistant-side chain-of-thought text. When present and
    * non-empty, the injected assistant message carries a `reasoning` block
@@ -118,12 +130,84 @@ export interface SeedToolCall {
   arguments: string
 }
 
-/** 一条伪造的工具结果。 */
+/** A configured timestamp: ISO-8601 text (offset recommended) or epoch milliseconds. */
+export type SeedTime = string | number
+
+/** One configured tool result. */
 export interface SeedToolResult {
   /** 结果正文（render 后的文本）。 */
   content: string
   /** 标记为失败结果。默认 false。 */
   isError?: boolean
+  /** 结果时间戳，渲染规则同 {@link HistoryPair.time}。 */
+  time?: SeedTime
+  /** 结果里附带的图片块（本地文件路径或 `data:` URL），与真实工具输出一致。 */
+  images?: readonly string[]
+}
+
+/** Resolve one configured image reference into a frozen image block, or undefined when unavailable. */
+export type SeedImageResolver = (ref: string) => ContentBlock | undefined
+
+const SEED_TIME_PATTERN = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:?\d{2})?$/
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0')
+}
+
+function localOffset(date: Date): string {
+  const minutes = -date.getTimezoneOffset()
+  const sign = minutes < 0 ? '-' : '+'
+  const absolute = Math.abs(minutes)
+  return `${sign}${pad2(Math.floor(absolute / 60))}:${pad2(absolute % 60)}`
+}
+
+/**
+ * Render a configured timestamp as `YYYY-MM-DD HH:mm:ss ±HH:MM`.
+ *
+ * ISO text keeps the wall clock and offset its author wrote (no silent
+ * time-zone translation); epoch milliseconds render in the host's local time.
+ * An unparsable value renders nothing, so a typo costs the stamp, never the pair.
+ * @param value - configured timestamp.
+ * @returns the formatted stamp, or undefined when absent or unparsable.
+ */
+export function formatSeedTime(value: SeedTime | undefined): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return undefined
+    const date = new Date(value)
+    if (Number.isNaN(date.getTime())) return undefined
+    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} `
+      + `${pad2(date.getHours())}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())} ${localOffset(date)}`
+  }
+  const match = SEED_TIME_PATTERN.exec(value.trim())
+  if (match === null) return undefined
+  const [, day, clock, seconds, rawOffset] = match
+  const offset = rawOffset === undefined || rawOffset === 'Z'
+    ? '+00:00'
+    : rawOffset.includes(':') ? rawOffset : `${rawOffset.slice(0, 3)}:${rawOffset.slice(3)}`
+  return `${day} ${clock}:${seconds ?? '00'} ${offset}`
+}
+
+/**
+ * Prepend the model-visible timestamp line to one message text.
+ * @param text - configured text, possibly empty.
+ * @param value - configured timestamp.
+ * @returns the stamped text, unchanged when no stamp parses.
+ */
+export function stampSeedText(text: string, value: SeedTime | undefined): string {
+  const stamp = formatSeedTime(value)
+  if (stamp === undefined) return text
+  return text.length > 0 ? `[${stamp}]\n${text}` : `[${stamp}]`
+}
+
+function seedImages(refs: readonly string[] | undefined, resolve: SeedImageResolver | undefined): ContentBlock[] {
+  if (refs === undefined || refs.length === 0 || resolve === undefined) return []
+  const blocks: ContentBlock[] = []
+  for (const ref of refs) {
+    const block = resolve(ref)
+    if (block !== undefined) blocks.push(block)
+  }
+  return blocks
 }
 
 /**
@@ -135,28 +219,45 @@ export interface SeedToolResult {
  * only on the request path, so there is no turn structure to conflict with
  * the loop's turn numbering and nothing for compaction to shadow. The user
  * side carries `kind:'user'` and the assistant side plugin attribution.
+ *
+ * A configured timestamp becomes a leading `[YYYY-MM-DD HH:mm:ss ±HH:MM]` line
+ * inside that message's text block (the model reads time only as text: dsh
+ * messages carry no time field). Configured image references resolve through
+ * the host's attachment store, so `读图` transcripts can carry real image blocks.
  * @param pairs - ordered reference exchanges.
+ * @param resolveImage - resolves one image reference to an image block.
  * @returns the frozen alternating user/assistant message sequence.
  */
-export function buildSeedMessages(pairs: readonly HistoryPair[]): readonly Message[] {
+export function buildSeedMessages(
+  pairs: readonly HistoryPair[],
+  resolveImage?: SeedImageResolver,
+): readonly Message[] {
   const messages: Message[] = []
   for (const [index, pair] of pairs.entries()) {
     // user 允许留空：为空时只注入 assistant 那一侧
     // （reasoning → 正文 → tool-call），不产生一条空文本的 user 消息。
-    if (pair.user !== undefined && pair.user.length > 0) {
+    const userText = stampSeedText(pair.user ?? '', pair.userTime ?? pair.time)
+    const userImages = seedImages(pair.userImages, resolveImage)
+    if (userText.length > 0 || userImages.length > 0) {
       messages.push(createUserMessage({
-        content: [{ type: 'text', text: pair.user }],
+        content: [
+          ...(userText.length > 0 ? [{ type: 'text', text: userText } as const] : []),
+          ...userImages,
+        ],
         source: { kind: 'user' },
       }))
     }
     // Thinking block first (the reasoning channel opens before the visible
-    // text, mirroring a real model turn); text block always present so the
-    // assistant side never renders as a reasoning-only turn.
+    // text, mirroring a real model turn). A step that only calls tools has no
+    // visible text: the text block is then omitted rather than emitted empty.
     const assistantContent: ContentBlock[] = []
     if (pair.assistantThinking !== undefined && pair.assistantThinking.length > 0) {
       assistantContent.push({ type: 'reasoning', text: pair.assistantThinking })
     }
-    assistantContent.push({ type: 'text', text: pair.assistant })
+    const assistantText = stampSeedText(pair.assistant, pair.assistantTime)
+    if (assistantText.length > 0) {
+      assistantContent.push({ type: 'text', text: assistantText })
+    }
     // 伪造的工具调用：原生 tool-call 块。放在 text 之后，与真实模型
     // 产出「先说话再调工具」的形状一致。
     for (const call of pair.toolCalls ?? []) {
@@ -180,7 +281,10 @@ export function buildSeedMessages(pairs: readonly HistoryPair[]): readonly Messa
       if (result === undefined) continue
       messages.push(createToolResultMessage({
         callId: ToolCallId(call.id),
-        content: [{ type: 'text', text: result.content }],
+        content: [
+          { type: 'text', text: stampSeedText(result.content, result.time) },
+          ...seedImages(result.images, resolveImage),
+        ],
         isError: result.isError === true,
       }))
     }

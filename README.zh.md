@@ -129,6 +129,34 @@ dsh plugin --profile web remove @wm-coders/dsh-custom-first-control-prompt
 
 参考对话放在消息序列首位且字节稳定，请求前缀保持可复用。
 
+## 时间、思考、正文、工具调用、结果
+
+一条参考对话可以复刻真实会话的五要素：
+
+| 字段 | 位置 | 作用 |
+|---|---|---|
+| `time` / `userTime` | 用户侧 | 用户消息时间戳 |
+| `assistantTime` | assistant 侧 | 助手消息时间戳 |
+| `assistantThinking` | assistant 侧 | 思考（reasoning 块） |
+| `assistant` | assistant 侧 | 正文（可为空：纯工具调用步） |
+| `toolCalls[]` | assistant 侧 | 工具命令（原生 tool-call 块） |
+| `toolResults[]` | 与调用按索引配对 | 返回结果，可带 `time` 与 `images` |
+| `userImages[]` | 用户侧 | 用户消息里的图片块 |
+
+时间戳取 ISO-8601（建议带偏移）或 epoch 毫秒，注入时渲染成该消息正文的第一行
+`[YYYY-MM-DD HH:mm:ss ±HH:MM]`（dsh 的 `Message` 没有时间字段，时间只能以文本形式
+让模型看到；ISO 文本保留你写的墙钟与偏移，不做时区换算）。图片取本地路径或
+`data:` URL，加载时写入 attachments 存储并生成真实 image 块，缺失或类型不支持只
+丢弃该张图并告警。
+
+把真实会话转成这种 YAML：
+
+```bash
+node tools/session-jsonl-to-yaml.mjs <session.v4.jsonl> --turn 9 --steps 12,52 --with-user
+```
+
+生成的样例见 `examples/session-76a36330-turn9.yml`（截图工具调用 + 图片结果 + 末轮思考与正文）。
+
 ## 已知限制与延后工作
 
 - **聊天界面看不到参考历史** — 种子只存在于请求路径，会话 UI 既不显示交替消息也不显示框架行；生效配置以 `ignorable` 插件记录（`appendPluginRecord`，需要 harness >= 0.2）镜像进会话日志，内容是可直接粘回 profile patch 的 `Config`，旧版 harness 则不写记录。

@@ -156,6 +156,48 @@ export class PanelService extends TypertRemoteService {
     return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\r?\n/g, '\\n')}"`
   }
 
+  /** Render a list of image references as a YAML flow sequence of scalars. */
+  private static yamlList(values: readonly string[]): string {
+    return `[${values.map(value => PanelService.yamlScalar(value)).join(', ')}]`
+  }
+
+  /** Parse a YAML flow sequence of scalars (`["a", "b"]`); a bare scalar yields one entry. */
+  private static parseInlineList(value: string): string[] {
+    const raw = value.trim()
+    const out: string[] = []
+    if (raw.length === 0) return out
+    if (!(raw.startsWith('[') && raw.endsWith(']'))) {
+      const single = PanelService.yamlUnquote(raw)
+      return single.length > 0 ? [single] : out
+    }
+    const inner = raw.slice(1, -1)
+    let current = ''
+    let quoted = false
+    for (let i = 0; i < inner.length; i++) {
+      const ch = inner[i]!
+      if (ch === '\\' && quoted && i + 1 < inner.length) {
+        current += ch + inner[i + 1]!
+        i += 1
+        continue
+      }
+      if (ch === '"') {
+        quoted = !quoted
+        current += ch
+        continue
+      }
+      if (ch === ',' && !quoted) {
+        const entry = PanelService.yamlUnquote(current)
+        if (entry.length > 0) out.push(entry)
+        current = ''
+        continue
+      }
+      current += ch
+    }
+    const last = PanelService.yamlUnquote(current)
+    if (last.length > 0) out.push(last)
+    return out
+  }
+
   private static parseBlock(raw: string): PanelConfigView {
     const out: PanelConfigView = { found: false, sections: [], history: [], includeSubagents: false }
     if (raw.indexOf('custom-first-control-prompt') < 0) return out
@@ -181,11 +223,41 @@ export class PanelService extends TypertRemoteService {
           cur.text = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
         }
       } else if (zone === 'history') {
-        if (t.indexOf('- user:') === 0) {
-          cur = { user: PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1)), assistant: '' }
+        // 一条参考对话的起始字段：用户侧为空时序列化出来可能以 assistant 字段打头，
+        // 所以任何这些 "- <field>:" 行都要开启新条目，而不是并进上一条。
+        const startsPair = t.indexOf('- time:') === 0
+          || t.indexOf('- user:') === 0
+          || t.indexOf('- userImages:') === 0
+          || t.indexOf('- assistant:') === 0
+          || t.indexOf('- assistantTime:') === 0
+          || t.indexOf('- assistantThinking:') === 0
+        if (startsPair) {
+          cur = { assistant: '' }
           out.history.push(cur)
+          sub = ''
+          curCall = null
+          curResult = null
+        }
+        if (cur !== null && t.indexOf('- time:') === 0) {
+          cur.time = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && t.indexOf('- user:') === 0) {
+          cur.user = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && t.indexOf('- userImages:') === 0) {
+          cur.userImages = PanelService.parseInlineList(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('userTime:') === 0) {
+          cur.userTime = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('userImages:') === 0) {
+          cur.userImages = PanelService.parseInlineList(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('assistantTime:') === 0) {
+          cur.assistantTime = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('- assistantTime:') === 0) {
+          cur.assistantTime = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
         } else if (cur !== null && 'assistant' in cur && t.indexOf('assistantThinking:') === 0) {
           cur.assistantThinking = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('- assistantThinking:') === 0) {
+          cur.assistantThinking = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && 'assistant' in cur && t.indexOf('- assistant:') === 0) {
+          cur.assistant = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
         } else if (cur !== null && 'assistant' in cur && t.indexOf('assistant:') === 0) {
           cur.assistant = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
         } else if (cur !== null && 'assistant' in cur && t.indexOf('toolCalls:') === 0) {
@@ -206,6 +278,10 @@ export class PanelService extends TypertRemoteService {
         } else if (cur !== null && sub === 'results' && t.indexOf('- content:') === 0) {
           curResult = { content: PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1)), isError: false }
           cur.toolResults!.push(curResult)
+        } else if (cur !== null && sub === 'results' && curResult !== null && t.indexOf('time:') === 0) {
+          curResult.time = PanelService.yamlUnquote(t.slice(t.indexOf(':') + 1))
+        } else if (cur !== null && sub === 'results' && curResult !== null && t.indexOf('images:') === 0) {
+          curResult.images = PanelService.parseInlineList(t.slice(t.indexOf(':') + 1))
         } else if (cur !== null && sub === 'results' && curResult !== null && t.indexOf('isError:') === 0) {
           curResult.isError = t.slice(t.indexOf(':') + 1).trim() === 'true'
         }
@@ -230,8 +306,21 @@ export class PanelService extends TypertRemoteService {
    */
   private static pairBlock(p: PanelPairView, itemIndent: string, fieldIndent: string): string {
     const userText = typeof p.user === 'string' ? p.user : ''
-    let block = `${itemIndent}- user: ${PanelService.yamlScalar(userText)}`
-      + `\n${fieldIndent}assistant: ${PanelService.yamlScalar(p.assistant)}`
+    const stamp = p.userTime ?? p.time
+    // `- time:` 打头让时间最显眼；没有 user 文本时也能单独承载时间
+    let block = `${itemIndent}- `
+    if (stamp !== undefined && String(stamp).length > 0) {
+      block += `time: ${PanelService.yamlScalar(String(stamp))}\n${fieldIndent}user: ${PanelService.yamlScalar(userText)}`
+    } else {
+      block += `user: ${PanelService.yamlScalar(userText)}`
+    }
+    if (p.userImages !== undefined && p.userImages.length > 0) {
+      block += `\n${fieldIndent}userImages: ${PanelService.yamlList(p.userImages)}`
+    }
+    if (p.assistantTime !== undefined && String(p.assistantTime).length > 0) {
+      block += `\n${fieldIndent}assistantTime: ${PanelService.yamlScalar(String(p.assistantTime))}`
+    }
+    block += `\n${fieldIndent}assistant: ${PanelService.yamlScalar(p.assistant)}`
     if (p.assistantThinking !== undefined && p.assistantThinking.length > 0) {
       block += `\n${fieldIndent}assistantThinking: ${PanelService.yamlScalar(p.assistantThinking)}`
     }
@@ -251,8 +340,15 @@ export class PanelService extends TypertRemoteService {
       if (pairs > 0) {
         block += `\n${fieldIndent}toolResults:`
         for (let i = 0; i < pairs; i++) {
-          block += `\n${callItemIndent}- content: ${PanelService.yamlScalar(results[i].content)}`
-            + `\n${callFieldIndent}isError: ${results[i].isError === true ? 'true' : 'false'}`
+          const result = results[i]!
+          block += `\n${callItemIndent}- content: ${PanelService.yamlScalar(result.content)}`
+            + `\n${callFieldIndent}isError: ${result.isError === true ? 'true' : 'false'}`
+          if (result.time !== undefined && String(result.time).length > 0) {
+            block += `\n${callFieldIndent}time: ${PanelService.yamlScalar(String(result.time))}`
+          }
+          if (result.images !== undefined && result.images.length > 0) {
+            block += `\n${callFieldIndent}images: ${PanelService.yamlList(result.images)}`
+          }
         }
       }
     }

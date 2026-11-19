@@ -20,8 +20,9 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import * as dshSession from '@deepseek-ai/dsh-session'
 import type { Session } from '@deepseek-ai/dsh-session'
-import type { GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
-import type { HistoryPair } from './seed.ts'
+import { readFile } from 'node:fs/promises'
+import type { ContentBlock, GenerateOptions, Message } from '@deepseek-ai/dsh-llm'
+import type { HistoryPair, SeedTime } from './seed.ts'
 import { buildSeedMessages, TRANSCRIPT_RESERVED_TAGS } from './seed.ts'
 import { PanelService } from './panel.ts'
 
@@ -77,7 +78,13 @@ export const Config: z<Config> = z.object({
   history: z.array(z.object({
     // user 允许留空：留空即只注入 assistant 侧
     user: z.string(),
+    // 时间戳：ISO-8601 文本或 epoch 毫秒；渲染成模型可见的正文首行
+    time: z.union([z.string(), z.number()]),
+    userTime: z.union([z.string(), z.number()]),
+    // 用户侧图片块：本地文件路径或 data: URL
+    userImages: z.array(z.string()).default([]),
     assistant: z.string().required(),
+    assistantTime: z.union([z.string(), z.number()]),
     // Schemastery fields are optional unless `.required()` — an absent
     // assistantThinking passes through and simply injects no reasoning block.
     assistantThinking: z.string(),
@@ -91,6 +98,8 @@ export const Config: z<Config> = z.object({
     toolResults: z.array(z.object({
       content: z.string().required(),
       isError: z.boolean().default(false),
+      time: z.union([z.string(), z.number()]),
+      images: z.array(z.string()).default([]),
     })).default([]),
   })),
   includeSubagents: z.boolean().default(false),
@@ -101,11 +110,19 @@ export const Config: z<Config> = z.object({
  * reply, and the optional reasoning / tool-call scaffolding carried with it.
  */
 export interface InjectedExchange {
-  user: string
+  user?: string
+  /** User-side timestamp (ISO-8601 text or epoch milliseconds). */
+  time?: SeedTime
+  /** Explicit alias of {@link time}. */
+  userTime?: SeedTime
+  /** User-side image references (local paths or `data:` URLs). */
+  userImages?: readonly string[]
   assistant: string
+  /** Assistant-side timestamp. */
+  assistantTime?: SeedTime
   assistantThinking?: string
   toolCalls?: Array<{ id: string; name: string; arguments: string }>
-  toolResults?: Array<{ content: string; isError: boolean }>
+  toolResults?: Array<{ content: string; isError: boolean; time?: SeedTime; images?: readonly string[] }>
 }
 
 /** One registered system-prompt section, as configured. */
@@ -219,21 +236,21 @@ function partitionSections(sections: readonly SectionEntry[]): { clean: SectionE
  * @returns the problem description, or no value when the pair is usable.
  */
 function pairProblem(pair: HistoryPair): string | undefined {
-  // assistant 侧仍必须非空：留空的话那条 assistant 消息只剩
-  // reasoning / tool-call，正文位是空的。
-  for (const [field, text] of [['assistant', pair.assistant]] as const) {
-    if (text.length === 0) {
-      return `${field} text is empty`
-    }
-    const lower = text.toLowerCase()
+  // 正文可以为空 —— 真实的纯工具调用步就没有可见文本；但整条都不能空：
+  // 没有正文也没有调用时那条 assistant 消息没有任何内容块。
+  const calls = pair.toolCalls ?? []
+  if (pair.assistant.length === 0 && calls.length === 0) {
+    return 'assistant text is empty and no toolCalls are configured'
+  }
+  if (pair.assistant.length > 0) {
+    const lower = pair.assistant.toLowerCase()
     const tag = TRANSCRIPT_RESERVED_TAGS.find(reserved => lower.includes(reserved))
     if (tag !== undefined) {
-      return `${field} text embeds reserved tag "${tag}"`
+      return `assistant text embeds reserved tag "${tag}"`
     }
   }
   // The optional thinking side degrades on the same reserved-tag rule; an
   // empty or absent value is simply no thinking block, never a problem.
-  const calls = pair.toolCalls ?? []
   const results = pair.toolResults ?? []
   if (results.length > calls.length) {
     return `toolResults has ${results.length} entr${results.length === 1 ? 'y' : 'ies'} but toolCalls has only ${calls.length}`
@@ -311,6 +328,79 @@ function splitLeadingSystemMessages(messages: readonly Message[]): {
   return { leading: messages.slice(0, end), rest: messages.slice(end) }
 }
 
+/** Minimal attachment face: durable content-addressed image storage. */
+interface SeedAttachments {
+  saveImage(input: { data: Uint8Array; mediaType: string; name?: string }): Promise<unknown>
+}
+
+const SEED_IMAGE_MEDIA_TYPES: Record<string, string> = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+}
+
+function seedImageMediaType(ref: string): string | undefined {
+  const clean = ref.split('?')[0]!.toLowerCase()
+  const dot = clean.lastIndexOf('.')
+  return dot === -1 ? undefined : SEED_IMAGE_MEDIA_TYPES[clean.slice(dot)]
+}
+
+/**
+ * Resolve every configured image reference into a real image block.
+ *
+ * The harness carries images as durable attachment references, never as inline
+ * bytes, so each configured path (or `data:` URL) goes through the attachment
+ * store and yields a content-addressed reference the provider route can read.
+ * A missing service, an unreadable file, or a rejected raster costs that one
+ * image (with a warning), never the pair.
+ * @param ctx - plugin context, used for the attachment service and logging.
+ * @param pairs - usable reference exchanges.
+ * @returns the resolved image blocks keyed by configured reference.
+ */
+async function resolveSeedImages(ctx: Context, pairs: readonly HistoryPair[]): Promise<Map<string, ContentBlock>> {
+  const refs: string[] = []
+  for (const pair of pairs) {
+    refs.push(...pair.userImages ?? [])
+    for (const result of pair.toolResults ?? []) refs.push(...result.images ?? [])
+  }
+  const unique = [...new Set(refs)]
+  const resolved = new Map<string, ContentBlock>()
+  if (unique.length === 0) return resolved
+  const attachments = ctx.get('attachments') as SeedAttachments | undefined
+  if (attachments === undefined) {
+    ctx.logger.warn('custom-first-control-prompt: attachments service unavailable; %d configured image(s) stay text-only', unique.length)
+    return resolved
+  }
+  for (const ref of unique) {
+    try {
+      let data: Uint8Array
+      let mediaType: string
+      if (ref.startsWith('data:')) {
+        const match = /^data:([^;,]+);base64,(.*)$/s.exec(ref)
+        if (match === null) throw new Error('unsupported data: URL (expected data:<media-type>;base64,<data>)')
+        mediaType = match[1]!
+        data = Buffer.from(match[2]!, 'base64')
+      } else {
+        const guessed = seedImageMediaType(ref)
+        if (guessed === undefined) throw new Error('unsupported image extension (png/jpeg/webp/gif)')
+        mediaType = guessed
+        data = await readFile(ref)
+      }
+      if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mediaType)) {
+        throw new Error(`unsupported media type ${mediaType}`)
+      }
+      const name = ref.slice(Math.max(ref.lastIndexOf('/'), ref.lastIndexOf('\\')) + 1)
+      const attachment = await attachments.saveImage({ data, mediaType, name })
+      resolved.set(ref, { type: 'image', attachment } as ContentBlock)
+    } catch (error) {
+      ctx.logger.warn('skipping configured image %s: %s', ref, error instanceof Error ? error.message : String(error))
+    }
+  }
+  return resolved
+}
+
 /**
  * Register configured sections and install the request-path seed injection:
  * a `llm/stream` waterfall listener that clones every ordinary conversation
@@ -369,7 +459,18 @@ export function apply(ctx: Context, config: Config): void {
   const { clean: pairs, problems: pairProblems } = partitionPairs(history)
   for (const problem of pairProblems) ctx.logger.warn('skipping a configured reference-history pair: %s', problem)
   if (mountableSections.length === 0 && pairs.length === 0) return
-  const seedMessages = buildSeedMessages(pairs)
+  // Configured images become durable attachments, which is an async store: the
+  // seeds start text-only and are rebuilt once every reference resolves, so
+  // activation never waits on disk I/O.
+  const resolvedImages = new Map<string, ContentBlock>()
+  let seedMessages = buildSeedMessages(pairs, ref => resolvedImages.get(ref))
+  void resolveSeedImages(ctx, pairs).then((images) => {
+    for (const [ref, block] of images) resolvedImages.set(ref, block)
+    seedMessages = buildSeedMessages(pairs, ref => resolvedImages.get(ref))
+  }).catch((error: unknown) => {
+    ctx.logger.warn('custom-first-control-prompt could not resolve configured images: %s',
+      error instanceof Error ? error.message : String(error))
+  })
   // Mirror the effective configuration (not just the exchanges): every field is
   // a Config field, so a log reader can hand the record back as a profile patch
   // entry and this plugin's schema accepts it unchanged.
@@ -381,8 +482,14 @@ export function apply(ctx: Context, config: Config): void {
       ...(section.enabled === false ? { enabled: false } : {}),
     })),
     history: pairs.map(pair => ({
-      user: pair.user,
+      // undefined 属性会让 session 的 JSON 快照整条拒绝（非无损序列化），
+      // 所以每个可选字段都必须“有值才出现”。
+      ...(pair.user === undefined ? {} : { user: pair.user }),
+      ...(pair.time === undefined ? {} : { time: pair.time }),
+      ...(pair.userTime === undefined ? {} : { userTime: pair.userTime }),
+      ...(pair.userImages === undefined || pair.userImages.length === 0 ? {} : { userImages: pair.userImages }),
       assistant: pair.assistant,
+      ...(pair.assistantTime === undefined ? {} : { assistantTime: pair.assistantTime }),
       ...(pair.assistantThinking === undefined ? {} : { assistantThinking: pair.assistantThinking }),
       ...(pair.toolCalls === undefined || pair.toolCalls.length === 0 ? {} : { toolCalls: pair.toolCalls }),
       ...(pair.toolResults === undefined || pair.toolResults.length === 0 ? {} : { toolResults: pair.toolResults }),
